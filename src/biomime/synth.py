@@ -25,8 +25,8 @@ from .model import FS, N_TIME
 from .mupool import POOLS, PoolParams
 
 MAX_UNITS_PER_MUSCLE = 96      # drawn from the bank's 128 per muscle: subject-specific subsets
-SVD_ENERGY = 0.995
-SVD_MAX_RANK = 24
+SVD_ENERGY = 0.999
+SVD_MAX_RANK = 32
 
 
 @dataclass
@@ -42,7 +42,7 @@ class UnitTable:
 
 class BioMimeEMG:
     def __init__(self, bank: MuapBank, subject, session, anat, pool="fuglevand", pool_params=None,
-                 units_per_muscle=MAX_UNITS_PER_MUSCLE, ied=None):
+                 units_per_muscle=MAX_UNITS_PER_MUSCLE, ied=None, keep_templates=False):
         self.bank, self.anat = bank, anat
         rng = np.random.default_rng(subject.seed + 17)              # subject-stable unit selection
         self.muscles = [m for m in bank.muscles if m in anat.muscle_names]
@@ -71,7 +71,9 @@ class BioMimeEMG:
             # beyond BioMime's range and axial overlap with the grid; subject factor covers size/atrophy.
             z_lo, z_hi = meta["z_range"]
             alive = np.clip((L_res - z_lo) / max(z_hi - z_lo, 1e-3), 0, 1) if L_res < 1 else 1.0
-            w = np.sqrt(meta["n_mu"] / n_sel) * meta["gain"] * subject.muscle_amp[self.model_index[j]] * alive
+            # subject.gain_mv / 1.5: between-subject amplitude spread (skin impedance, anatomy), median 1.
+            w = np.sqrt(meta["n_mu"] / n_sel) * meta["gain"] * subject.muscle_amp[self.model_index[j]] * alive \
+                * subject.gain_mv / 1.5
             if w <= 1e-4:
                 continue
             rank = table["pool_index"][sel] / max(meta["n_mu"] - 1, 1)
@@ -79,15 +81,18 @@ class BioMimeEMG:
             self.pools.append((j, mu_pool, len(templates)))
             muap = bank.muaps(m, sel)                                       # (n, nL, 10, 32, 96) uV
             n, nL = muap.shape[:2]
-            proj = np.einsum("cg,nbgt->nbct", P, muap.reshape(n, nL, -1, N_TIME)) * w * 1e-3   # mV
+            unit_w = w * table["amp_extra"][np.sort(sel)] * 1e-3            # -> mV
+            proj = np.tensordot(muap.reshape(n, nL, -1, N_TIME), P, axes=([2], [1]))   # (n, nL, 96, C)
+            proj = np.ascontiguousarray(proj.transpose(0, 1, 3, 2)) * unit_w[:, None, None, None]
             templates.append(proj)
             mus.append(np.full(n, j)), ranks.append(rank), ths.append(mu_pool.rt), sizes.append(table["size"][sel])
-            conds.append(table["cond"][sel]), weights.append(np.full(n, w))
+            conds.append(table["cond"][sel]), weights.append(unit_w * 1e3)
         H = np.concatenate(templates)                                       # (N, nL, C, 96)
         self.n_units, self.n_bins = H.shape[:2]
         self.units = UnitTable(np.concatenate(mus), np.concatenate(ranks), np.concatenate(ths),
                                np.concatenate(sizes), np.concatenate(conds), np.concatenate(weights))
         self.unit_offset = np.cumsum([0] + [t.shape[0] for t in templates])
+        self.H = H if keep_templates else None       # (N, nL, C, 96) mV, for exact reference synthesis
 
         # Low-rank factorisation per channel: H[:, :, c, :] ~ A_c @ Phi_c
         K = SVD_MAX_RANK
@@ -95,16 +100,18 @@ class BioMimeEMG:
         self.Phi = np.zeros((N_TIME, K, C), np.float32)
         self.rank_used, self.energy = np.zeros(C, int), np.zeros(C)
         for c in range(C):
-            M = H[:, :, c, :].reshape(-1, N_TIME)
-            U, s, Vt = np.linalg.svd(M, full_matrices=False)
-            e = np.cumsum(s ** 2) / max((s ** 2).sum(), 1e-30)
+            # Principal waveforms from the 96x96 Gram matrix (same basis as the SVD of M, far cheaper).
+            M = H[:, :, c, :].reshape(-1, N_TIME).astype(np.float64)
+            ev, V = np.linalg.eigh(M.T @ M)
+            ev, V = ev[::-1].clip(min=0), V[:, ::-1]
+            e = np.cumsum(ev) / max(ev.sum(), 1e-30)
             k = int(min(np.searchsorted(e, SVD_ENERGY) + 1, K))
-            self.A[:, :k, c] = U[:, :k] * s[:k]
-            self.Phi[:, :k, c] = Vt[:k].T
+            self.A[:, :k, c] = M @ V[:, :k]
+            self.Phi[:, :k, c] = V[:, :k]
             self.rank_used[c], self.energy[c] = k, e[k - 1]
         self.n_channels = C
 
-    def synthesize(self, u, L, fs_ctrl, rng, return_spikes=False):
+    def synthesize(self, u, L, fs_ctrl, rng, return_spikes=False, exact=False):
         """u, L: (T, nu_model) excitation and normalised fibre length. Returns (N, C) mV at 2048 Hz."""
         T = u.shape[0]
         N = int(round(T / fs_ctrl * FS))
@@ -135,8 +142,18 @@ class BioMimeEMG:
         else:
             S = sparse.csr_matrix((N, self.n_units * self.n_bins), dtype=np.float32)
         K, C = self.A.shape[1:]
-        X = (S @ self.A.reshape(-1, K * C)).reshape(N, K, C)
-        emg = signal.fftconvolve(X, self.Phi, axes=0)[:N].sum(1)          # MUAP onset at the spike
+        if exact:
+            if self.H is None:
+                raise ValueError("exact synthesis needs keep_templates=True")
+            X = S @ self.H.reshape(-1, C * N_TIME)                      # (N, C*96) sparse spikes x templates
+            emg = np.zeros((N + N_TIME, C))
+            Xr = X.reshape(N, C, N_TIME)
+            for tau in range(N_TIME):                                  # shift-and-add (reference only)
+                emg[tau:tau + N] += Xr[:, :, tau]
+            emg = emg[:N]
+        else:
+            X = (S @ self.A.reshape(-1, K * C)).reshape(N, K, C)
+            emg = signal.fftconvolve(X, self.Phi, axes=0)[:N].sum(1)      # MUAP onset at the spike
         if return_spikes:
             units = np.concatenate([a for a, _ in spike_log]) if spike_log else np.zeros(0, np.int32)
             times = np.concatenate([b for _, b in spike_log]) if spike_log else np.zeros(0, np.int32)

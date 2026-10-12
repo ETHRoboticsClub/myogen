@@ -54,7 +54,12 @@ R_MODEL_REF = 0.032          # m, outermost MyoHand/MyoArm line-of-action radius
 FAT_REF = 0.003              # m, assumed subcutaneous fat of BioMime's reference forearm
 RADIAL_FILL = 0.9
 
-FIBRE_DENSITY = 200          # fibres / mm^2 (NeuroMotion default)
+# Fibres per muscle from PCSA (max isometric force / 50.8 N/cm^2) and NeuroMotion's cadaver-corrected fibre
+# density (34 um fibres, FDI correction -> ~19.8k fibres per cm^2 of PCSA, i.e. 40k-140k per forearm muscle).
+# The simpler 200 fibres/mm^2 x territory area in NeuroMotion's example script gives ~8x fewer fibres and
+# ~20x too little sEMG amplitude.
+SPECIFIC_TENSION = 50.8      # N / cm^2
+FIBRES_PER_CM2 = 19_800
 MU_PER_MM2 = 3.2             # median of the anchors (number of MUs / area)
 DEPTH_EXTRA_DECAY = 0.006    # m: e-folding of BioMime's own depth decay (13x over 7-23 mm), continued beyond its range
 
@@ -167,7 +172,8 @@ def build_territories(m, d, anat, grid: GridGeometry = None):
         dep = (float(np.clip(dep[0], dmin, dmax)), float(np.clip(dep[1], dmin, dmax)))
         terr[name] = Territory(
             muscle=name, depth=dep, angle=(float(ang[0]), float(ang[1])), area_mm2=float(area),
-            n_mu=int(n_mu), n_fibres=int(FIBRE_DENSITY * area), anchored=anchored,
+            n_mu=int(n_mu), n_fibres=int(F0 / SPECIFIC_TENSION * FIBRES_PER_CM2),
+            anchored=anchored,
             depth_excess=excess, axial_overlap=overlap, z_range=zr,
         )
     return terr

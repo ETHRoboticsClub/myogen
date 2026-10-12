@@ -15,6 +15,7 @@ Layout (HDF5):
   /<muscle>/cond   (n, 6) physical conditions at L = 1 (num, depth, angle, iz, cv, len)
   /<muscle>/z      (n, 16) latents
   /<muscle>/size   (n,) fibres per motor unit (size principle: recruitment order)
+  /<muscle>/amp_extra (n,) amplitude factor for units beyond BioMime's fibre-number range (>= 1)
   /<muscle>/muap   (n, nL, 10, 32, 96) float16, microvolts (monopolar)
   /<muscle>.attrs  territory (depth/angle ranges, n_mu, n_fibres, gain, anchored)
 """
@@ -43,7 +44,7 @@ def sample_units(rng, terr, n):
     sizes = sizes_all[idx]
     rank = idx / max(terr.n_mu - 1, 1)                                  # 0 = smallest, 1 = largest
     cond = {
-        "num": np.log(np.maximum(sizes, 3.0)),
+        "num": np.log(np.maximum(sizes, 3.0)),     # clipped to BioMime's range later; excess -> amp_extra
         "depth": rng.uniform(*terr.depth, len(idx)),
         "angle": rng.uniform(*terr.angle, len(idx)) % 1.0,
         "iz": np.clip(rng.normal(0.5, 0.05, len(idx)), 0.37, 0.63),
@@ -79,6 +80,9 @@ def build(out=BANK_PATH, per_muscle=128, seed=0, threads=None, grid=None):
             t0 = time.time()
             cond, sizes, idx = sample_units(rng, t, per_muscle)
             cond, _ = clip_physical(cond)
+            # Units larger than BioMime's training range (870 fibres): same shape, amplitude x fibre ratio
+            # (surface potentials superpose linearly over fibres).
+            amp_extra = np.maximum(sizes / np.exp(cond["num"]), 1.0)
             n = len(sizes)
             z = rng.standard_normal((n, LATENT)).astype(np.float32)
             muap = np.empty((n, len(L_BINS), 10, 32, 96), np.float16)
@@ -89,6 +93,7 @@ def build(out=BANK_PATH, per_muscle=128, seed=0, threads=None, grid=None):
             g.create_dataset("z", data=z)
             g.create_dataset("size", data=sizes.astype(np.float32))
             g.create_dataset("pool_index", data=idx.astype(np.int32))
+            g.create_dataset("amp_extra", data=amp_extra.astype(np.float32))
             g.create_dataset("muap", data=muap, chunks=(1, len(L_BINS), 10, 32, 96))
             g.attrs.update({k: (list(v) if isinstance(v, tuple) else v) for k, v in asdict(t).items()})
             g.attrs["gain"] = t.gain
@@ -114,7 +119,8 @@ class MuapBank:
     def unit_table(self, muscle):
         with h5py.File(self.path, "r") as f:
             g = f[muscle]
-            return {"cond": g["cond"][:], "z": g["z"][:], "size": g["size"][:], "pool_index": g["pool_index"][:]}
+            return {"cond": g["cond"][:], "z": g["z"][:], "size": g["size"][:], "pool_index": g["pool_index"][:],
+                    "amp_extra": g["amp_extra"][:] if "amp_extra" in g else np.ones(len(g["size"]), np.float32)}
 
     def muaps(self, muscle, units=None):
         """(n, nL, 10, 32, 96) float32 microvolts for the selected units (all if None).
@@ -123,8 +129,8 @@ class MuapBank:
         of each holding the ~1 GB bank in memory.
         """
         with h5py.File(self.path, "r") as f:
-            ds = f[muscle]["muap"]
-            x = ds[:] if units is None else ds[np.sort(np.asarray(units))]
+            x = f[muscle]["muap"][:]          # contiguous read (h5py point selection is ~30x slower)
+        x = x if units is None else x[np.sort(np.asarray(units))]
         return x.astype(np.float32)
 
 
