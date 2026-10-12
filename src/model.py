@@ -148,6 +148,11 @@ def belly_points(m, d, anat, n_per_muscle, rng=None, spread=0.0):
     return out
 
 
+def fibre_lengths(m, d, anat):
+    """Current muscle fibre lengths (m): path length minus tendon slack (rigid tendon, as in NeuroMotion)."""
+    return d.actuator_length - anat.tendon_slack
+
+
 def dense_moments(m, d, out=None):
     """Muscle moment arms as a dense (nu, nv) matrix (MuJoCo stores them sparsely)."""
     if out is None:

@@ -125,9 +125,20 @@ def synthesize(u, G, qd, subject: Subject, session: Session, fs_ctrl, fs=2000, f
         out[t0 * up:t1 * up] = np.einsum("trj,tjc->trc", src, G[t0:t1]).reshape(n, C)
     # Source noise is unit-variance before band-pass; restore a sensible amplitude scale.
     out *= subject.gain_mv * 3.0
-    out *= session.channel_gain[None].astype(np.float32)
+    return acquire(out, qd, subject, session, fs_ctrl, fs=fs, fs_out=fs_out, rng=rng)
 
-    t = np.arange(T * up) / fs
+
+def acquire(out, qd, subject: Subject, session: Session, fs_ctrl, fs=2000, fs_out=2000, rng=None):
+    """Recording chain shared by every source model (analytic, BioMime): electrode-skin gain, amplifier and
+    skin noise, mains, movement artifacts, bad contact, 20-450 Hz amplifier, device front-end.
+
+    out: (N, C) clean sEMG in mV at fs. qd: (T, nv) joint velocities at fs_ctrl (movement artifacts).
+    """
+    rng = rng or np.random.default_rng()
+    N, C = out.shape
+    out = (out * session.channel_gain[None]).astype(np.float32)
+    t_ctrl = np.arange(len(qd))
+    t = np.arange(N) / fs
     noise = subject.noise_uv * 1e-3 * session.noise_scale
     out += rng.normal(0, noise, out.shape).astype(np.float32)
     mains_amp = subject.mains_uv * 1e-3 * (1 + 0.3 * np.sin(2 * np.pi * rng.uniform(0.05, 0.3) * t))
@@ -137,13 +148,13 @@ def synthesize(u, G, qd, subject: Subject, session: Session, fs_ctrl, fs=2000, f
                       + 0.3 * np.sin(2 * np.pi * 3 * subject.mains_hz * t + ph[1]))).astype(np.float32)
     # Movement artifacts: low-frequency transients scaled by forearm/wrist speed.
     speed = np.abs(qd[:, :3]).sum(1)
-    speed = np.interp(np.arange(T * up) / up, t_ctrl, speed)
+    speed = np.interp(t * fs_ctrl, t_ctrl, speed)
     lp = signal.butter(2, 8, fs=fs, output="sos")
-    art = signal.sosfilt(lp, rng.standard_normal((T * up, C)), axis=0) * 0.03
+    art = signal.sosfilt(lp, rng.standard_normal((N, C)), axis=0) * 0.03
     out += (art * (session.motion_artifact * speed)[:, None]).astype(np.float32)
     if session.bad_channel >= 0:
         b = session.bad_channel
-        out[:, b] = 0.1 * out[:, b] + rng.normal(0, 20 * noise, T * up) \
+        out[:, b] = 0.1 * out[:, b] + rng.normal(0, 20 * noise, N) \
             + 30 * subject.mains_uv * 1e-3 * np.sin(2 * np.pi * subject.mains_hz * t)
     # Amplifier band-pass (causal, like hardware), then the device's own processing and sampling.
     hp = signal.butter(4, [20, min(450, 0.45 * fs)], btype="bandpass", fs=fs, output="sos")
