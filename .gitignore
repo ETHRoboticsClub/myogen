@@ -4,4 +4,4 @@ data/
 *.png
 !reports/**/*.png
 MUJOCO_LOG.TXT
-third_party/
+*.egg-info/

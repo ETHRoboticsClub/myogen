@@ -1,0 +1,19 @@
+# NinaPro DB5-matched validation set (Myo emulation) + realism report: data/val_db5, reports/realism_db5
+#   myogen generate --config configs/val_db5.yml && myogen realism --config configs/val_db5.yml
+extends: ../myogen.yml
+
+generate:
+  out: ../data/val_db5
+  subjects: 10
+  sessions: 2
+  trials: 3
+  duration: 40.0
+  amputee_frac: 0.0
+  device: myo
+  motion: ninapro
+  bank_datasets: [db5]
+  support: supported
+
+realism:
+  real: db5
+  out: ../reports/realism_db5

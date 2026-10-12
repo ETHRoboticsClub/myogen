@@ -5,9 +5,9 @@
 import numpy as np
 import pytest
 
-from src.biomime.anatomy import GridGeometry
-from src.biomime.electrodes import Channel, interp_matrix, skin_filter
-from src.biomime.mupool import FuglevandPool, LIFPool
+from myogen.biomime.anatomy import GridGeometry
+from myogen.biomime.electrodes import Channel, interp_matrix, skin_filter
+from myogen.biomime.mupool import FuglevandPool, LIFPool
 
 
 def test_interp_on_node_and_bipolar_zero_sum():
@@ -40,16 +40,20 @@ def test_pool_recruitment_and_rates(Pool):
 
 @pytest.fixture(scope="module")
 def synth():
-    from src.biomime.bank import BANK_PATH, MuapBank
-    from src.biomime.synth import BioMimeEMG
-    from src.generate import _model
-    from src.subject import sample_session, sample_subject
-    if not BANK_PATH.exists():
-        pytest.skip("MUAP bank not built")
+    from pathlib import Path
+
+    from myogen.biomime.bank import MuapBank
+    from myogen.biomime.synth import BioMimeEMG
+    from myogen.config import load_config
+    from myogen.generate import _model
+    from myogen.subject import sample_session, sample_subject
+    cfg = load_config()                       # ./myogen.yml in the repository (paths.data: data)
+    if not Path(cfg["paths"]["muap_bank"]).exists():
+        pytest.skip("MUAP bank not available (myogen download muap-bank)")
     m, d, anat = _model()
     rng = np.random.default_rng(1)
-    sub = sample_subject(rng, m.nu, anat.extrinsic, device="myo")
-    return BioMimeEMG(MuapBank(), sub, sample_session(rng, sub), anat, units_per_muscle=24, keep_templates=True), m
+    sub = sample_subject(rng, m.nu, anat.extrinsic, cfg["electrodes"]["myo"], device="myo")
+    return BioMimeEMG(MuapBank(cfg["paths"]["muap_bank"]), sub, sample_session(rng, sub), anat, units_per_muscle=24, keep_templates=True), m
 
 
 def test_low_rank_matches_exact(synth):
