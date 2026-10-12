@@ -1,0 +1,13 @@
+# Development config for this repository: `myogen <command>` run in the repo root uses it (it extends the
+# packaged defaults, src/myogen/defaults.yml). Inputs live in the repo's data/ (gitignored).
+extends: default
+
+paths:
+  data: data
+
+generate:
+  out: data/run1
+  motion: mix                 # real NinaPro motion needs data/real/latent_bank.h5
+
+realism:
+  out: reports/realism

@@ -1,7 +1,0 @@
-mujoco>=3.4
-myo-sim>=0.2.3
-numpy
-scipy
-h5py
-matplotlib
-mjviser

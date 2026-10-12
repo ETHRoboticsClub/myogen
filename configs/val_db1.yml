@@ -1,0 +1,19 @@
+# NinaPro DB1-matched validation set (Otto Bock emulation) + realism report: data/val_db1, reports/realism_db1
+#   myogen generate --config configs/val_db1.yml && myogen realism --config configs/val_db1.yml
+extends: ../myogen.yml
+
+generate:
+  out: ../data/val_db1
+  subjects: 10
+  sessions: 2
+  trials: 3
+  duration: 40.0
+  amputee_frac: 0.0
+  device: otto_bock
+  motion: ninapro
+  bank_datasets: [db1]
+  support: supported
+
+realism:
+  real: db1
+  out: ../reports/realism_db1

@@ -1,0 +1,10 @@
+# DB5 validation with BioMime motor-unit EMG at the calibrated gain: data/val_db5_bm6, reports/realism_db5_biomime
+extends: val_db5.yml
+
+generate:
+  out: ../data/val_db5_bm6
+  emg_model: biomime
+  biomime_gain: 6.0
+
+realism:
+  out: ../reports/realism_db5_biomime
