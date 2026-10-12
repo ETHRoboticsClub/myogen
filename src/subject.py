@@ -81,11 +81,13 @@ def sample_layout(rng, device, n_channels, rings, residual, amputee):
 def sample_device_params(rng, device):
     if device == "otto_bock":
         # 13E200-style: rectification + low-pass smoothing; output gain set by the technician's knob.
-        return {"smooth_hz": float(rng.uniform(3.0, 6.0)), "volts_per_mv": float(np.exp(rng.normal(np.log(15), 0.5)))}
+        return {"smooth_hz": float(rng.uniform(3.0, 6.0)), "volts_per_mv": float(np.exp(rng.normal(np.log(15), 0.5))),
+                "ied": float(rng.uniform(0.015, 0.025))}
     if device == "myo":
         return {"counts_per_mv": float(np.exp(rng.normal(np.log(150), 0.4))), "alias": bool(rng.random() < 0.5),
-                "adc_noise": float(rng.uniform(0.3, 0.8))}   # counts RMS
-    return {}
+                "adc_noise": float(rng.uniform(0.3, 0.8)),   # counts RMS
+                "ied": float(rng.uniform(0.012, 0.018))}     # m between the bipolar contacts of a Myo pod
+    return {"ied": float(rng.uniform(0.015, 0.025))}
 
 
 def sample_subject(rng, nu, extrinsic, n_channels=8, rings=1, amputee=False, device="raw"):

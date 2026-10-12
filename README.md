@@ -38,6 +38,8 @@ workers.
 | `src/subject.py` | every randomised subject / session / device parameter |
 | `src/generate.py` | parallel generation, passive equilibrium, QC, HDF5 shards |
 | `src/realism.py` | realism gates against NinaPro |
+| `src/biomime/` | BioMime motor-unit-level EMG backend (section 4) |
+| `scripts/setup_biomime.sh` | installs the BioMime backend (third-party code, weights, MUAP bank) |
 | `models/` | the pinned model snapshot + meshes (editable, versioned with the code) |
 | `data/real/ninapro_db1/` | 5 DB1 subjects copied from emg2action (raw `.mat`) |
 | `data/real/ninapro_db5/` | all 10 DB5 subjects (`ninapro.hevs.ch/files/DB5_Preproc`; cite Pizzolato et al. 2017) |
@@ -141,17 +143,53 @@ fluctuations). The knobs are `hold_tone`, `cocontraction_*`, `load_prob` and the
 | leaky smoothness | redundant co-activation decayed over ~3 s after each movement |
 | device-specific decay / noise, holding tone, Otto Bock smoothing | ring correlation, Myo rest floor, envelope delay |
 
-## 4. Next steps
+## 4. Motor-unit-level EMG with BioMime (`--emg-model biomime`)
+
+The analytic source model (band-limited noise per muscle) is fast but has no motor units. The BioMime backend
+(`src/biomime/`) reimplements the NeuroMotion idea (Ma et al. 2024, `docs/`) on our MuJoCo model:
+**spike trains x dynamic MUAPs**, with every intermediate variable available.
+
+```bash
+scripts/setup_biomime.sh                       # third-party code + weights + MUAP bank (~10 min, ~1.2 GB)
+.venv/bin/python -m src.generate --out data/bm_run --emg-model biomime --device myo --save-spikes ...
+.venv/bin/python -m src.biomime.bank info      # territories, unit counts, gains
+```
+
+| Stage | Module | What it does |
+|---|---|---|
+| anatomy | `biomime/anatomy.py` | maps our 48 muscles into BioMime's forearm: 8 anchor compartments use NeuroMotion's published territories; others use our line-of-action geometry rotated onto the anchors (~33 deg RMS), plus 2 anatomical overrides (BRD, FPL). Deep muscles beyond BioMime's 23 mm training depth are clipped and attenuated (6 mm e-folding, BioMime's own decay). Upper-arm and intrinsic hand muscles are excluded |
+| MUAP bank | `biomime/bank.py` | 128 motor units per muscle (fewer if the muscle has fewer) spanning the size distribution (NeuroMotion Eq. 1-2), each rendered at 5 fibre-length bins (L = 0.85-1.15; depth ~ L^-1/2, CV ~ L^-1, length ~ L), full 10x32 grid, float16 uV. BioMime runs once (~28 ms/MUAP on CPU) |
+| electrodes | `biomime/electrodes.py` | any layout as poles on the periodic grid: rings, staggered rings, targeted, HD grids; bipolar along the fibres with per-device inter-electrode distance; extra fat -> spatial low-pass + attenuation |
+| motor-unit pools | `biomime/mupool.py` | size-ordered pools behind one interface: `FuglevandPool` (rate model, vectorised; ~9->36 Hz, ISI CV 0.14) and `LIFPool` (leaky integrate-and-fire, ~15->28 Hz, CV 0.16-0.3). New neuron models subclass `MotorUnitPool` |
+| synthesis | `biomime/synth.py` | per subject: draws 96 of each muscle's bank units (subject-specific); per session: projects MUAPs onto the electrodes and compresses each channel's templates by SVD (rank 5-18 for 99.5 % energy); per trial: spikes are split between the two nearest fibre-length bins, then one sparse product + one batched FFT convolution |
+| acquisition | `emg.acquire` | the same noise / mains / artifact / amplifier / device chain as the analytic model |
+
+With `--save-spikes`, each trial also stores `spikes/{unit, sample}` (2048 Hz) and `spikes/units/{muscle, rank,
+threshold, size, cond, weight}`: ground truth for decomposition algorithms and for training or driving spiking
+networks. `labels/fibre_len` (normalised fibre length per muscle) is stored for every model.
+
+**Assumptions to keep in mind**
+- BioMime encodes **one** forearm anatomy and a fixed 10x32 grid. Its axial placement on our forearm is not
+  documented, so `GridGeometry` assumes a 10 mm row pitch from 6 to 42 % of forearm length. Recalibrate it with
+  `bank regrid` (MUAPs unchanged).
+- Between-subject variability comes from motor-unit sampling, pool parameters, skin, electrodes and devices. It
+  does not come from anatomy: that would need a retrained or anatomy-conditioned BioMime.
+- The public checkpoint has 6 conditions (no fat conductivity); skin is modelled outside the network.
+- **License:** BioMime and NeuroMotion are GPL-3.0. They are installed into `third_party/` (gitignored), not
+  vendored. The NeuroMotion territory tables in `anatomy.py` are cited data. Check the GPL implications before
+  distributing code that imports BioMime.
+
+## 5. Next steps
 
 1. **Fit the behaviour knobs automatically**: a small Bayesian or random search over hold tone, co-contraction
    and grip-load ranges against the gates. They are cheap to evaluate (≈ 3 min per device).
 2. **Myo firmware notch**: the real DB5 PSD has a 50 Hz notch the emulation lacks.
 3. **The decisive test**: pretrain on synthetic, fine-tune on DB5, and compare against training from scratch,
    measuring R² against calibration seconds per held-out subject.
-4. **Optional detailed EMG layer**: motor-unit-level synthesis (e.g. BioMime) behind the same
-   `synthesize(u, G, …)` interface, if raw or HD-EMG realism becomes necessary.
+4. **BioMime backend**: calibrate the grid placement and amplitude against DB5 with the realism gates, grow the
+   bank (more units per muscle for more subject diversity), and try LIF pools / SNN decoders on the saved spikes.
 
-## 5. Data format
+## 6. Data format
 
 `<out>/shard_XXX.h5`, one group per trial (`sSSSS_xXX_tTT`): `emg` (device units at `attrs.fs_emg`) and
 `labels/{latent, q, qd, q_ref, act, exc, reserve, cocontraction, grip_load, restimulus}` at 100 Hz

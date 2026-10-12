@@ -21,8 +21,8 @@ import mujoco
 import numpy as np
 from scipy import signal
 
-from .emg import EMGGeometry, synthesize
-from .model import Anatomy, load
+from .emg import EMGGeometry, acquire, synthesize
+from .model import Anatomy, fibre_lengths, load
 from .motion import N_LATENT, REST, JointMap, intent_trajectory, smooth_profile
 from .subject import DEVICE_FS, DEVICES, sample_session, sample_subject
 from .tracker import MuscleTracker, TrackerConfig
@@ -101,9 +101,29 @@ def _bank(path, datasets=("db1", "db5")):
     return _BANK
 
 
+_SYNTH = {}
+
+
+def biomime_synth(subject, session, key, muap_bank_path, pool="fuglevand"):
+    """BioMimeEMG for this (subject, session), built once per worker and reused across its trials."""
+    from .biomime.bank import MuapBank
+    from .biomime.synth import BioMimeEMG
+    if key not in _SYNTH:
+        _SYNTH.clear()                         # trials are grouped by (subject, session): keep only the current one
+        if "bank" not in _SYNTH_BANK:
+            _SYNTH_BANK["bank"] = MuapBank(muap_bank_path)
+        _SYNTH[key] = BioMimeEMG(_SYNTH_BANK["bank"], subject, session, _model()[2], pool=pool)
+    return _SYNTH[key]
+
+
+_SYNTH_BANK = {}
+
+
 def simulate_trial(subject, session, duration, seed, fs_ctrl=100, warmup=0.5, n_src=6,
-                   fs_emg=2000, fs_out=2000, tracker_kwargs=None, motion="synthetic", bank=None):
-    """motion: "synthetic" (generator prior) or "ninapro" (real glove-derived intent from `bank`)."""
+                   fs_emg=2000, fs_out=2000, tracker_kwargs=None, motion="synthetic", bank=None,
+                   biomime=None, save_spikes=False):
+    """motion: "synthetic" (generator prior) or "ninapro" (real glove-derived intent from `bank`).
+    biomime: a BioMimeEMG for this subject/session -> motor-unit-level EMG; None -> analytic source model."""
     m, d, anat = _model()
     rng = np.random.default_rng(seed)
     every = int(round(1 / (fs_ctrl * m.opt.timestep)))
@@ -134,6 +154,7 @@ def simulate_trial(subject, session, duration, seed, fs_ctrl=100, warmup=0.5, n_
         session.gravity_dir = g / np.linalg.norm(g)
     m.opt.gravity[:] = 9.81 * session.gravity_dir
     set_passive_springs(m, d, anat, q_rest, subject.passive_stiffness)
+    fibre_rest = np.maximum(fibre_lengths(m, d, anat), 1e-3)       # d is at q_rest: reference fibre lengths
     qd_ref = np.gradient(q_ref, 1 / fs_ctrl, axis=0)
     qdd_ref = np.gradient(qd_ref, 1 / fs_ctrl, axis=0)
     # Engagement: how far the hand is from its relaxed posture or how fast it moves. Co-contraction only happens
@@ -154,11 +175,11 @@ def simulate_trial(subject, session, duration, seed, fs_ctrl=100, warmup=0.5, n_
     mujoco.mj_forward(m, d)
     tracker = MuscleTracker(m, d, TrackerConfig(ctrl_every=every, muscle_cost=subject.recruitment_cost,
                                                 **(tracker_kwargs or {})))
-    geom = EMGGeometry(m, d, anat, subject, session, n_src=n_src)
+    geom = EMGGeometry(m, d, anat, subject, session, n_src=n_src) if biomime is None else None
 
     rec = {k: np.zeros((T, n)) for k, n in [("q", m.nq), ("qd", m.nv), ("act", m.nu), ("exc", m.nu),
-                                            ("reserve", m.nv)]}
-    G = np.zeros((T, m.nu * n_src, subject.layout.n_channels), np.float32)
+                                            ("reserve", m.nv), ("fibre", m.nu)]}
+    G = np.zeros((T, m.nu * n_src, subject.layout.n_channels), np.float32) if geom is not None else None
     residual = np.zeros(T)
     support = np.zeros(m.nv)
     for name, frac in [("elbow_flexion_r", session.arm_support), ("pro_sup_r", 0.7 * session.arm_support),
@@ -168,22 +189,34 @@ def simulate_trial(subject, session, duration, seed, fs_ctrl=100, warmup=0.5, n_
             support[m.jnt_dofadr[jid]] = frac
     for k in range(T):
         u, _, r = tracker.control(q_ref[k], qd_ref[k], qdd_ref[k], cocon[k], load_tau[k], support)
-        G[k] = geom.gains(d)          # state is current after mj_inverse
+        if geom is not None:
+            G[k] = geom.gains(d)      # state is current after mj_inverse
         d.ctrl[:] = u
         rec["exc"][k], rec["reserve"][k], residual[k] = u, r, tracker.last_residual
         for _ in range(every):
             mujoco.mj_step(m, d)
         rec["q"][k], rec["qd"][k], rec["act"][k] = d.qpos, d.qvel, d.act
+        rec["fibre"][k] = fibre_lengths(m, d, anat)
 
     s = slice(n_warm, None)
-    emg = synthesize(rec["exc"][s], G[s], rec["qd"][s], subject, session, fs_ctrl,
-                     fs=fs_emg, fs_out=fs_out, rng=rng)
+    fibre_rel = rec["fibre"] / fibre_rest                       # normalised fibre length (1 = relaxed posture)
+    spikes = None
+    if biomime is None:
+        emg = synthesize(rec["exc"][s], G[s], rec["qd"][s], subject, session, fs_ctrl,
+                         fs=fs_emg, fs_out=fs_out, rng=rng)
+    else:
+        # Same smooth neural drive as the analytic model (the controller's fast corrections are not neural).
+        u = signal.sosfiltfilt(signal.butter(2, 4.0, fs=fs_ctrl, output="sos"), rec["exc"][s], axis=0)
+        x, spikes = biomime.synthesize(np.clip(u, 0, 1), fibre_rel[s], fs_ctrl, rng, return_spikes=True)
+        g = np.gcd(int(fs_emg), 2048)
+        x = signal.resample_poly(x, int(fs_emg) // g, 2048 // g, axis=0) if fs_emg != 2048 else x
+        emg = acquire(x, rec["qd"][s], subject, session, fs_ctrl, fs=fs_emg, fs_out=fs_out, rng=rng)
     # Labels describe the state after each tick; q_ref[k+1] is the matching reference.
     q_ref_next = np.vstack([q_ref[1:], q_ref[-1:]])
     labels = {
         "q": rec["q"][s], "qd": rec["qd"][s], "q_ref": q_ref_next[s], "latent": z[s],
         "act": rec["act"][s], "exc": rec["exc"][s], "reserve": rec["reserve"][s],
-        "cocontraction": cocon[s], "grip_load": grip[s], "restimulus": restim[s],
+        "cocontraction": cocon[s], "grip_load": grip[s], "restimulus": restim[s], "fibre_len": fibre_rel[s],
     }
     err = np.degrees(labels["q"] - labels["q_ref"])
     wrist = [m.jnt_dofadr[m.joint(n).id] for n in ("deviation_r", "flexion_r")]
@@ -201,7 +234,15 @@ def simulate_trial(subject, session, duration, seed, fs_ctrl=100, warmup=0.5, n_
     qc["pass"] = bool(qc["finite"] and qc["rmse_deg"] < QC_MAX_RMSE_DEG
                       and qc["wrist_reserve_rms_nm"] < QC_MAX_WRIST_RESERVE_NM
                       and qc["saturation"] < QC_MAX_SATURATION)
-    meta = {"electrodes_m": geom.electrodes.tolist(), "gravity": session.gravity_dir.tolist(), "motion": source}
+    meta = {"gravity": session.gravity_dir.tolist(), "motion": source,
+            "emg_model": "analytic" if biomime is None else "biomime"}
+    if geom is not None:
+        meta["electrodes_m"] = geom.electrodes.tolist()
+    else:
+        meta["electrodes"] = [{"name": ch.name, "poles": ch.poles} for ch in biomime.channels]
+        meta["biomime"] = biomime.summary()
+    if save_spikes and spikes is not None:
+        meta["_spikes"] = spikes
     return emg, labels, qc, meta
 
 
@@ -225,15 +266,29 @@ def _job(args):
             if motion == "mix":
                 motion = "ninapro" if mot_rng.random() < cfg["real_frac"] else "synthetic"
             bank = _bank(cfg["bank"], cfg["bank_datasets"]) if motion == "ninapro" else None
+            synth = None
+            if cfg["emg_model"] == "biomime":
+                synth = biomime_synth(subject, session, (it["subject"], it["session"]), cfg["muap_bank"], cfg["pool"])
             emg, labels, qc, meta = simulate_trial(subject, session, cfg["duration"], seed,
                                                    fs_ctrl=cfg["fs_label"], fs_emg=cfg["fs_sim"],
-                                                   fs_out=cfg["fs_emg"], motion=motion, bank=bank)
+                                                   fs_out=cfg["fs_emg"], motion=motion, bank=bank,
+                                                   biomime=synth, save_spikes=cfg["save_spikes"])
+            spikes = meta.pop("_spikes", None)
             name = f"s{it['subject']:04d}_x{it['session']:02d}_t{it['trial']:02d}"
             g = f.create_group(name)
             g.create_dataset("emg", data=emg, compression="gzip", compression_opts=4, chunks=True)
             for k, v in labels.items():
                 v = v if v.dtype.kind in "iu" else v.astype(np.float32)
                 g.create_dataset(f"labels/{k}", data=v, compression="gzip")
+            if spikes is not None:
+                # Motor-unit ground truth: spike (unit, sample @ 2048 Hz) pairs + the unit table.
+                g.create_dataset("spikes/unit", data=spikes[0], compression="gzip")
+                g.create_dataset("spikes/sample", data=spikes[1], compression="gzip")
+                g["spikes"].attrs["fs"] = 2048
+                ut = synth.units
+                for k in ("muscle", "rank", "threshold", "size", "cond", "weight"):
+                    g.create_dataset(f"spikes/units/{k}", data=getattr(ut, k), compression="gzip")
+                g["spikes/units"].attrs["muscles"] = synth.muscles
             g.attrs.update({"subject": it["subject"], "session": it["session"], "trial": it["trial"],
                             "amputee": it["amputee"], "fs_emg": cfg["fs_emg"], "fs_label": cfg["fs_label"],
                             "subject_params": json.dumps(subject.to_dict()),
@@ -267,6 +322,11 @@ def main():
     ap.add_argument("--support", choices=["random", "supported", "free"], default="random",
                     help="forearm on an armrest (NinaPro protocol), held up, or a 50/50 mix")
     ap.add_argument("--bank-datasets", nargs="+", default=["db1", "db5"], help="restrict real motion to these")
+    ap.add_argument("--emg-model", choices=["analytic", "biomime"], default="analytic",
+                    help="analytic interference model (fast) or BioMime motor-unit-level synthesis")
+    ap.add_argument("--muap-bank", default=str(Path(__file__).resolve().parent.parent / "data" / "biomime" / "muap_bank.h5"))
+    ap.add_argument("--pool", choices=["fuglevand", "lif"], default="fuglevand", help="motor-unit pool (biomime)")
+    ap.add_argument("--save-spikes", action="store_true", help="store motor-unit spike trains (biomime)")
     ap.add_argument("--fs-emg", type=int, default=2000, help="output EMG rate for --device raw")
     ap.add_argument("--fs-sim", type=int, default=2000, help="internal EMG synthesis rate")
     ap.add_argument("--fs-label", type=int, default=100)
@@ -286,8 +346,13 @@ def main():
     amputee = amp_rng.random(args.subjects) < args.amputee_frac
     items = [{"subject": s, "session": x, "trial": t, "amputee": bool(amputee[s])}
              for s in range(args.subjects) for x in range(args.sessions) for t in range(args.trials)]
-    n = min(args.workers, len(items))
-    jobs = [(str(out / f"shard_{i:03d}.h5"), items[i::n], cfg) for i in range(n)]
+    # Keep each (subject, session) on one worker so per-session setup (e.g. BioMime projection) is built once.
+    groups = {}
+    for it in items:
+        groups.setdefault((it["subject"], it["session"]), []).append(it)
+    groups = list(groups.values())
+    n = min(args.workers, len(groups))
+    jobs = [(str(out / f"shard_{i:03d}.h5"), [it for grp in groups[i::n] for it in grp], cfg) for i in range(n)]
     t0 = time.time()
     with Pool(n) as pool:
         results = [r for rs in pool.map(_job, jobs) for r in rs]
