@@ -39,6 +39,7 @@ workers.
 | `src/generate.py` | parallel generation, passive equilibrium, QC, HDF5 shards |
 | `src/realism.py` | realism gates against NinaPro |
 | `src/biomime/` | BioMime motor-unit-level EMG backend (section 4) |
+| `tests/` | `pytest` checks for the BioMime backend |
 | `scripts/setup_biomime.sh` | installs the BioMime backend (third-party code, weights, MUAP bank) |
 | `models/` | the pinned model snapshot + meshes (editable, versioned with the code) |
 | `data/real/ninapro_db1/` | 5 DB1 subjects copied from emg2action (raw `.mat`) |
@@ -150,7 +151,7 @@ The analytic source model (band-limited noise per muscle) is fast but has no mot
 **spike trains x dynamic MUAPs**, with every intermediate variable available.
 
 ```bash
-scripts/setup_biomime.sh                       # third-party code + weights + MUAP bank (~10 min, ~1.2 GB)
+scripts/setup_biomime.sh                       # third-party code + weights + MUAP bank (~10 min, 0.8 GB)
 .venv/bin/python -m src.generate --out data/bm_run --emg-model biomime --device myo --save-spikes ...
 .venv/bin/python -m src.biomime.bank info      # territories, unit counts, gains
 ```
@@ -161,12 +162,35 @@ scripts/setup_biomime.sh                       # third-party code + weights + MU
 | MUAP bank | `biomime/bank.py` | 128 motor units per muscle (fewer if the muscle has fewer) spanning the size distribution (NeuroMotion Eq. 1-2), each rendered at 5 fibre-length bins (L = 0.85-1.15; depth ~ L^-1/2, CV ~ L^-1, length ~ L), full 10x32 grid, float16 uV. BioMime runs once (~28 ms/MUAP on CPU) |
 | electrodes | `biomime/electrodes.py` | any layout as poles on the periodic grid: rings, staggered rings, targeted, HD grids; bipolar along the fibres with per-device inter-electrode distance; extra fat -> spatial low-pass + attenuation |
 | motor-unit pools | `biomime/mupool.py` | size-ordered pools behind one interface: `FuglevandPool` (rate model, vectorised; ~9->36 Hz, ISI CV 0.14) and `LIFPool` (leaky integrate-and-fire, ~15->28 Hz, CV 0.16-0.3). New neuron models subclass `MotorUnitPool` |
-| synthesis | `biomime/synth.py` | per subject: draws 96 of each muscle's bank units (subject-specific); per session: projects MUAPs onto the electrodes and compresses each channel's templates by SVD (rank 5-18 for 99.5 % energy); per trial: spikes are split between the two nearest fibre-length bins, then one sparse product + one batched FFT convolution |
+| synthesis | `biomime/synth.py` | per subject: draws 96 of each muscle's bank units (subject-specific); per session: projects MUAPs onto the electrodes and compresses each channel's templates (rank 19-32 for 99.9 % energy); per trial: spikes are split between the two nearest fibre-length bins, then one sparse product + one batched FFT convolution. Fibres per muscle follow PCSA x NeuroMotion's cadaver-corrected density (40k-190k); units beyond BioMime's 870-fibre range scale linearly |
 | acquisition | `emg.acquire` | the same noise / mains / artifact / amplifier / device chain as the analytic model |
 
 With `--save-spikes`, each trial also stores `spikes/{unit, sample}` (2048 Hz) and `spikes/units/{muscle, rank,
 threshold, size, cond, weight}`: ground truth for decomposition algorithms and for training or driving spiking
 networks. `labels/fibre_len` (normalised fibre length per muscle) is stored for every model.
+
+**Realism against DB5 (Myo emulation, same protocol as section 3).** At physical amplitude (`--biomime-gain 1`)
+the signal sits near the Myo's ADC floor and 2/9 gates pass. With `--biomime-gain 6`, 4/9 pass, and the
+spatial/spectral statistics are the closest of either model:
+
+| statistic | DB5 real | analytic | BioMime (gain 6) |
+|---|---|---|---|
+| ring correlation at 1/2/3/4 electrodes | .72 .60 .58 .57 | .79 .63 .55 .53 | **.73 .58 .54 .51** |
+| median frequency (Hz) | 66.4 | 66.8 | 65.8 |
+| EMG→movement lag (ms) | 130 | 109 | **130** |
+| participation ratio | 2.12 | 2.04 | 2.23 |
+| amplitude quantiles p5…p95 | .05 .07 .09 .21 .57 | .08 .10 .13 .21 .53 | .06 .08 .10 .16 .48 |
+| envelope autocorr 200 ms | 0.87 | 0.68 | 0.59 ✗ |
+| ridge R² | 0.32 | 0.27 | 0.15 ✗ |
+| rest / movement ratio | 0.29 | 0.55 | 0.64 ✗ |
+
+The remaining failures are the same behavioural gap as the analytic model (sustained effort during NinaPro
+holds), amplified by motor-unit discreteness: a few large units near an electrode make the envelope burstier than
+Gaussian interference. Gain 6 is a device/effort calibration, not physics: physical amplitudes are ~0.07 mV RMS at
+30 % drive and ~0.26 mV at full drive. Figures: `reports/biomime/` (spike raster, MUAPs vs fibre length).
+
+**Performance**: bank build ~7 min (once); per session 3 s (projection + low-rank basis); 30 s of EMG at 30 %
+drive on all muscles in 3.4 s. Low-rank synthesis is within 5 % of exact shift-and-add (`tests/`).
 
 **Assumptions to keep in mind**
 - BioMime encodes **one** forearm anatomy and a fixed 10x32 grid. Its axial placement on our forearm is not
@@ -186,8 +210,9 @@ networks. `labels/fibre_len` (normalised fibre length per muscle) is stored for 
 2. **Myo firmware notch**: the real DB5 PSD has a 50 Hz notch the emulation lacks.
 3. **The decisive test**: pretrain on synthetic, fine-tune on DB5, and compare against training from scratch,
    measuring R² against calibration seconds per held-out subject.
-4. **BioMime backend**: calibrate the grid placement and amplitude against DB5 with the realism gates, grow the
-   bank (more units per muscle for more subject diversity), and try LIF pools / SNN decoders on the saved spikes.
+4. **BioMime backend**: fit `--biomime-gain` and the grid placement (`bank regrid`) with the realism gates,
+   together with the behaviour knobs of item 1; grow the bank (more units per muscle, several latent draws) for
+   more subject diversity; use the saved spikes for decomposition ground truth and LIF / SNN decoders.
 
 ## 6. Data format
 

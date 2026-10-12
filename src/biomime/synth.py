@@ -42,7 +42,10 @@ class UnitTable:
 
 class BioMimeEMG:
     def __init__(self, bank: MuapBank, subject, session, anat, pool="fuglevand", pool_params=None,
-                 units_per_muscle=MAX_UNITS_PER_MUSCLE, ied=None, keep_templates=False):
+                 units_per_muscle=MAX_UNITS_PER_MUSCLE, ied=None, keep_templates=False, gain=1.0):
+        """gain: global amplitude calibration (1 = physical BioMime amplitudes). Absolute sEMG amplitude depends
+        on fibre counts, electrode-skin contact and how hard subjects actually contract, none of which are
+        pinned down here; fit it with the realism gates against a target device (see README)."""
         self.bank, self.anat = bank, anat
         rng = np.random.default_rng(subject.seed + 17)              # subject-stable unit selection
         self.muscles = [m for m in bank.muscles if m in anat.muscle_names]
@@ -73,7 +76,7 @@ class BioMimeEMG:
             alive = np.clip((L_res - z_lo) / max(z_hi - z_lo, 1e-3), 0, 1) if L_res < 1 else 1.0
             # subject.gain_mv / 1.5: between-subject amplitude spread (skin impedance, anatomy), median 1.
             w = np.sqrt(meta["n_mu"] / n_sel) * meta["gain"] * subject.muscle_amp[self.model_index[j]] * alive \
-                * subject.gain_mv / 1.5
+                * subject.gain_mv / 1.5 * gain
             if w <= 1e-4:
                 continue
             rank = table["pool_index"][sel] / max(meta["n_mu"] - 1, 1)

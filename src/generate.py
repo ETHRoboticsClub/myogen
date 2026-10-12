@@ -104,7 +104,7 @@ def _bank(path, datasets=("db1", "db5")):
 _SYNTH = {}
 
 
-def biomime_synth(subject, session, key, muap_bank_path, pool="fuglevand"):
+def biomime_synth(subject, session, key, muap_bank_path, pool="fuglevand", gain=1.0):
     """BioMimeEMG for this (subject, session), built once per worker and reused across its trials."""
     from .biomime.bank import MuapBank
     from .biomime.synth import BioMimeEMG
@@ -112,7 +112,7 @@ def biomime_synth(subject, session, key, muap_bank_path, pool="fuglevand"):
         _SYNTH.clear()                         # trials are grouped by (subject, session): keep only the current one
         if "bank" not in _SYNTH_BANK:
             _SYNTH_BANK["bank"] = MuapBank(muap_bank_path)
-        _SYNTH[key] = BioMimeEMG(_SYNTH_BANK["bank"], subject, session, _model()[2], pool=pool)
+        _SYNTH[key] = BioMimeEMG(_SYNTH_BANK["bank"], subject, session, _model()[2], pool=pool, gain=gain)
     return _SYNTH[key]
 
 
@@ -268,7 +268,8 @@ def _job(args):
             bank = _bank(cfg["bank"], cfg["bank_datasets"]) if motion == "ninapro" else None
             synth = None
             if cfg["emg_model"] == "biomime":
-                synth = biomime_synth(subject, session, (it["subject"], it["session"]), cfg["muap_bank"], cfg["pool"])
+                synth = biomime_synth(subject, session, (it["subject"], it["session"]), cfg["muap_bank"], cfg["pool"],
+                                      cfg["biomime_gain"])
             emg, labels, qc, meta = simulate_trial(subject, session, cfg["duration"], seed,
                                                    fs_ctrl=cfg["fs_label"], fs_emg=cfg["fs_sim"],
                                                    fs_out=cfg["fs_emg"], motion=motion, bank=bank,
@@ -327,6 +328,7 @@ def main():
     ap.add_argument("--muap-bank", default=str(Path(__file__).resolve().parent.parent / "data" / "biomime" / "muap_bank.h5"))
     ap.add_argument("--pool", choices=["fuglevand", "lif"], default="fuglevand", help="motor-unit pool (biomime)")
     ap.add_argument("--save-spikes", action="store_true", help="store motor-unit spike trains (biomime)")
+    ap.add_argument("--biomime-gain", type=float, default=1.0, help="global amplitude calibration (1 = physical)")
     ap.add_argument("--fs-emg", type=int, default=2000, help="output EMG rate for --device raw")
     ap.add_argument("--fs-sim", type=int, default=2000, help="internal EMG synthesis rate")
     ap.add_argument("--fs-label", type=int, default=100)
