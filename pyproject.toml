@@ -4,15 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "myogen"
-version = "0.1.0"
-description = "Musculoskeletal forearm simulation and synthetic multichannel sEMG data generator"
+version = "0.2.0"
+description = "Synthetic forearm sEMG from hand and wrist joint angles, on a musculoskeletal forearm model"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["mujoco>=3.4", "myo-sim>=0.2.3", "numpy", "scipy", "h5py", "matplotlib", "mjviser", "pyyaml", "rich"]
+dependencies = ["mujoco>=3.4", "numpy", "scipy", "h5py", "pyyaml"]
 
 [project.optional-dependencies]
-test = ["pytest"]
+viewer = ["mjviser"]
 biomime = ["torch", "gdown"]          # CPU-only torch: add --extra-index-url https://download.pytorch.org/whl/cpu
+model-build = ["myo-sim>=0.2.3"]      # only for scripts/build_model.py
+test = ["pytest"]
 
 [project.scripts]
 myogen = "myogen.cli:main"
@@ -21,5 +23,5 @@ myogen = "myogen.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-myogen = ["defaults.yml", "models/*.xml", "models/meshes/*.stl"]
-"myogen.biomime.vendor" = ["generator.yaml", "LICENSE", "README.md"]
+myogen = ["models/*.xml", "models/meshes/*.stl"]
+"myogen.engines.biomime.vendor" = ["generator.yaml", "LICENSE", "README.md"]
