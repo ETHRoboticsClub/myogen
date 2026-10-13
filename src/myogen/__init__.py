@@ -1,19 +1,12 @@
-"""myogen: synthetic forearm sEMG from a hand/wrist movement recording, on a musculoskeletal forearm model.
+"""myogen: synthetic forearm sEMG from hand and wrist joint angles, on a musculoskeletal forearm model.
 
     import myogen as mg
-    motion = mg.Motion.load("motion.h5")             # or mg.Motion(latent=z, fs=100), or mg.example_motion()
-    cfg = mg.SimConfig.load("sim.yml")               # or mg.SimConfig(engine="biomime", device="myo")
-    result = mg.simulate(motion, cfg, out="emg.h5")
-
-Package layout, in pipeline order:
-    motion/      posture latent, movement recordings, synthetic and NinaPro motion
-    body/        forearm model, external loads, muscle controller
-    emg/         analytic and BioMime EMG engines, recording chain (noise, devices)
-    subject.py   randomised subject / session parameters
-    simulation/  one trial, SimConfig, simulate()
-    dataset/     `myogen generate`, realism checks, downloads
-    viewer/      web viewer, live view, PNG plots
-    cli.py, commands.py, config.py   the `myogen` command line (mg.run) and its YAML config
+    motion = mg.HandMotion.load("motion.h5")                    # or mg.JointAdapter(mapping)(angles, fs)
+    electrodes = mg.Electrodes.ring(n=8, position_cm=7)         # or .myo(), .otto_bock(), your own Electrode list
+    recording = mg.Simulator(electrodes, engine="biomime").run(motion)   # engine: "analytic" | "biomime"
+    recording.save("emg.h5")
+    mg.replay(recording)                                        # web viewer: moving hand + EMG
+    mg.calibrate(simulator, motions, real_emgs)                 # fit a device profile to real recordings
 """
 from importlib.metadata import PackageNotFoundError, version
 
@@ -22,10 +15,19 @@ try:
 except PackageNotFoundError:
     __version__ = "unknown"
 
-from .commands import COMMANDS, run
-from .config import load_config
-from .motion import LATENT_NAMES, Motion, example_motion
-from .simulation import SimConfig, SimResult, simulate
+from .calibration import Calibration, calibrate, compare
+from .electrodes import Electrode, Electrodes, Frontend
+from .motion import HandMotion, JointAdapter, example_motion
+from .recording import Recording
+from .simulator import Simulator
+from .subject import Subject
 
-__all__ = ["LATENT_NAMES", "Motion", "SimConfig", "SimResult", "example_motion", "simulate",
-           "COMMANDS", "load_config", "run"]
+
+def replay(recording, port=8080, emg_window=4.0):
+    """Open a Recording (or a recording file) in the web viewer (needs myogen[viewer])."""
+    from .viewer import replay as _replay
+    return _replay(recording, port=port, emg_window=emg_window)
+
+
+__all__ = ["Calibration", "calibrate", "compare", "Electrode", "Electrodes", "Frontend", "HandMotion", "JointAdapter", "Recording", "Simulator", "Subject",
+           "example_motion", "replay"]
