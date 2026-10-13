@@ -1,8 +1,6 @@
-"""Pretrained BioMime generator: loading and condition handling.
+"""The pretrained BioMime generator: physical motor-unit conditions in, monopolar MUAPs (volts) out.
 
-Conditions are given in physical units and normalised exactly as BioMime was trained ([min, max] -> [0.5, 1]).
-Values outside the training range are clipped (the generator is not trusted to extrapolate) and the clipping is
-reported so callers can account for it (e.g. extra attenuation for muscles deeper than the training range).
+Conditions are normalised as in training ([min, max] -> [0.5, 1]); values outside the training range are clipped.
 """
 from pathlib import Path
 
@@ -10,7 +8,7 @@ import numpy as np
 import torch
 import yaml
 
-from ..config import user_data_dir
+from ...config import user_data_dir
 
 CHECKPOINT = user_data_dir() / "biomime" / "model_linear.pth"   # default; commands pass paths.biomime_weights
 CONFIG = Path(__file__).resolve().parent / "vendor" / "generator.yaml"

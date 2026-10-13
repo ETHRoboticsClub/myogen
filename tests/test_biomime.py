@@ -1,13 +1,10 @@
-"""Checks for the BioMime backend. Needs the bank: run scripts/setup_biomime.sh first.
-
-    .venv/bin/python -m pytest tests/ -q
-"""
+"""Checks for the BioMime engine. The synthesis tests need the MUAP bank (myogen download muap-bank)."""
 import numpy as np
 import pytest
 
-from myogen.biomime.anatomy import GridGeometry
-from myogen.biomime.electrodes import Channel, interp_matrix, skin_filter
-from myogen.biomime.mupool import FuglevandPool, LIFPool
+from myogen.emg.biomime.anatomy import GridGeometry
+from myogen.emg.biomime.electrodes import Channel, interp_matrix, skin_filter
+from myogen.emg.biomime.mupool import FuglevandPool, LIFPool
 
 
 def test_interp_on_node_and_bipolar_zero_sum():
@@ -42,15 +39,15 @@ def test_pool_recruitment_and_rates(Pool):
 def synth():
     from pathlib import Path
 
-    from myogen.biomime.bank import MuapBank
-    from myogen.biomime.synth import BioMimeEMG
+    from myogen.body.model import shared_model
     from myogen.config import load_config
-    from myogen.generate import _model
+    from myogen.emg.biomime.bank import MuapBank
+    from myogen.emg.biomime.synth import BioMimeEMG
     from myogen.subject import sample_session, sample_subject
     cfg = load_config()                       # ./myogen.yml in the repository (paths.data: data)
     if not Path(cfg["paths"]["muap_bank"]).exists():
         pytest.skip("MUAP bank not available (myogen download muap-bank)")
-    m, d, anat = _model()
+    m, d, anat = shared_model()
     rng = np.random.default_rng(1)
     sub = sample_subject(rng, m.nu, anat.extrinsic, cfg["electrodes"]["myo"], device="myo")
     return BioMimeEMG(MuapBank(cfg["paths"]["muap_bank"]), sub, sample_session(rng, sub), anat, units_per_muscle=24, keep_templates=True), m

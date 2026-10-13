@@ -1,23 +1,12 @@
-"""Offline MUAP bank: BioMime MUAPs for every visible muscle, motor units x fibre-length bins, full 10x32 grid.
+"""Offline MUAP bank: BioMime MUAPs of every visible muscle, motor units x fibre-length bins, full grid.
 
-    myogen biomime-bank build    # -> paths.muap_bank, biomime_bank: per_muscle / seed / threads
-    myogen biomime-bank info
-    myogen biomime-bank regrid   # new grid placement assumption (biomime_bank: z0 / z1), same MUAPs
+    myogen biomime-bank build | info | regrid
 
-Why a bank: BioMime costs ~28 ms per MUAP on this CPU, and NeuroMotion's dynamics depend on one scalar per
-muscle (normalised fibre length L: depth ~ L^-1/2, conduction velocity ~ L^-1, fibre length ~ L). So each
-motor unit is rendered once per L bin and synthesis interpolates between bins. BioMime encodes a single
-anatomy, so between-subject variability comes from which motor units a subject draws from the bank (and from
-the electrode / skin / device layers), not from re-running the network.
+BioMime costs ~28 ms per MUAP, and NeuroMotion's movement dynamics depend on one scalar per muscle (normalised
+fibre length L), so each unit is rendered once per L bin and synthesis interpolates between bins.
 
-Layout (HDF5):
-  attrs: L_bins, grid geometry, checkpoint name, units ("uV")
-  /<muscle>/cond   (n, 6) physical conditions at L = 1 (num, depth, angle, iz, cv, len)
-  /<muscle>/z      (n, 16) latents
-  /<muscle>/size   (n,) fibres per motor unit (size principle: recruitment order)
-  /<muscle>/amp_extra (n,) amplitude factor for units beyond BioMime's fibre-number range (>= 1)
-  /<muscle>/muap   (n, nL, 10, 32, 96) float16, microvolts (monopolar)
-  /<muscle>.attrs  territory (depth/angle ranges, n_mu, n_fibres, gain, anchored)
+HDF5: attrs L_bins, grid, units ("uV"); per muscle: cond (n, 6), z (n, 16), size (n,), pool_index (n,),
+amp_extra (n,), muap (n, nL, 10, 32, 96) float16 uV, and the territory as attributes.
 """
 import json
 import logging
@@ -28,10 +17,10 @@ from pathlib import Path
 import h5py
 import numpy as np
 
-from ..config import user_data_dir
-from ..model import Anatomy, load
+from ...body.model import Anatomy, load
+from ...config import user_data_dir
 from .anatomy import GridGeometry, build_territories, mu_sizes
-from .model import COND_ORDER, LATENT, BioMimeGenerator, clip_physical
+from .generator import COND_ORDER, LATENT, BioMimeGenerator, clip_physical
 
 log = logging.getLogger(__name__)
 
@@ -162,7 +151,7 @@ def info(path=BANK_PATH):
     b = MuapBank(path)
     from rich.table import Table
 
-    from ..log import console
+    from ...log import console
     t = Table(title=f"{b.path}\nL bins {b.L_bins}, {b.grid}", title_justify="left")
     for col in ("muscle", "MUs", "gain", "depth (mm)", "angle (frac.)", "anchored"):
         t.add_column(col, justify="left" if col == "muscle" else "right")

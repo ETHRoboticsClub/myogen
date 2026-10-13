@@ -1,6 +1,10 @@
-"""myogen: synthetic forearm sEMG data generation. All parameters live in a YAML config (see config.py).
+"""myogen: synthetic forearm sEMG data generation.
 
-  command              what                                                config
+  simulate MOTION OUT    one movement recording -> one sEMG recording (myogen simulate -h)
+
+Dataset tools (parameters in a YAML config):
+
+  command                what                                                config
   project
     init [DIR]           write a myogen.yml extending the defaults (in DIR or here)
     config               print the resolved configuration
@@ -29,34 +33,82 @@ import logging
 import sys
 
 from . import log as logsetup
-from .api import BANK_ACTIONS, COMMANDS, run
+from .commands import BANK_ACTIONS, COMMANDS, run
 from .config import parse_override
+
+TAKES_ARGS = ("biomime-bank", "download", "init")       # commands with positional arguments
 
 log = logging.getLogger("myogen")
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="myogen", description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("command", choices=COMMANDS, metavar="command")
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv[:1] == ["simulate"]:
+        return simulate_main(argv[1:])
+    ap = argparse.ArgumentParser(prog="myogen", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("command", choices=("simulate", *COMMANDS), metavar="command")
     ap.add_argument("args", nargs="*", metavar="KEY=VALUE",
                     help="config overrides (biomime-bank: ACTION first; download: what; init: optional DIR)")
-    ap.add_argument("-c", "--config", default=None, help="config file ('default': the repository's config.yml)")
+    ap.add_argument("-c", "--config", default=None, help="config file ('default': the packaged defaults)")
     ap.add_argument("-v", "--verbose", action="store_true", help="debug output (e.g. every finished trial)")
     ap.add_argument("-q", "--quiet", action="store_true", help="warnings and errors only")
     a = ap.parse_args(argv)
-    logsetup.setup(1 if a.verbose else -1 if a.quiet else 0)
-
+    logsetup.setup(_verbosity(a))
     positional = [x for x in a.args if "=" not in x]
+    if a.command == "biomime-bank" and (len(positional) != 1 or positional[0] not in BANK_ACTIONS):
+        ap.error(f"biomime-bank needs one action: {' | '.join(BANK_ACTIONS)}")
+    if a.command == "init" and len(positional) > 1:
+        ap.error("init takes at most one directory")
+    if positional and a.command not in TAKES_ARGS:
+        ap.error(f"unexpected arguments {positional} (overrides are KEY=VALUE)")
+    _guarded(lambda: run(a.command, a.config, dict(parse_override(x) for x in a.args if "=" in x), positional))
+
+
+def simulate_main(argv):
+    """myogen simulate MOTION OUT [--config sim.yml] [--engine ...] [--device ...] [--seed N]"""
+    from .emg.acquisition import DEVICES
+    from .simulation.config import ENGINES, SimConfig
+    ap = argparse.ArgumentParser(prog="myogen simulate", description="Simulate the sEMG of one movement recording "
+                                 "(input format: myogen.motion.recording; output format: "
+                                 "myogen.simulation.simulator; config: --write-config).")
+    ap.add_argument("motion", nargs="?", help="movement recording (.h5 / .hdf5 / .npz)")
+    ap.add_argument("out", nargs="?", help="output HDF5 file")
+    ap.add_argument("-c", "--config", help="simulation config (YAML); default: the built-in defaults")
+    ap.add_argument("--engine", choices=ENGINES, help="override engine.name")
+    ap.add_argument("--device", choices=DEVICES, help="override device.name")
+    ap.add_argument("--seed", type=int, help="override seed")
+    ap.add_argument("--write-config", metavar="PATH", help="write the commented default config to PATH and exit")
+    ap.add_argument("-v", "--verbose", action="store_true")
+    ap.add_argument("-q", "--quiet", action="store_true")
+    a = ap.parse_args(argv)
+    logsetup.setup(_verbosity(a))
+    if a.write_config:
+        return _guarded(lambda: log.info(f"wrote {SimConfig.write_default(a.write_config)}"))
+    if not (a.motion and a.out):
+        ap.error("MOTION and OUT are required")
+
+    def simulate():
+        from .simulation.simulator import simulate
+        cfg = SimConfig.load(a.config) if a.config else SimConfig()
+        if a.engine:
+            cfg.engine.name = a.engine
+        if a.device:
+            cfg.device.name = a.device
+        if a.seed is not None:
+            cfg.seed = a.seed
+        simulate(a.motion, cfg, out=a.out)
+
+    _guarded(simulate)
+
+
+def _verbosity(a):
+    return 1 if a.verbose else -1 if a.quiet else 0
+
+
+def _guarded(fn):
+    """Run fn; report expected errors as one log line and exit with a status instead of a traceback."""
     try:
-        overrides = dict(parse_override(x) for x in a.args if "=" in x)
-        if a.command == "biomime-bank" and (len(positional) != 1 or positional[0] not in BANK_ACTIONS):
-            ap.error(f"biomime-bank needs one action: {' | '.join(BANK_ACTIONS)}")
-        if a.command == "init" and len(positional) > 1:
-            ap.error("init takes at most one directory")
-        if positional and a.command not in ("biomime-bank", "download", "init"):
-            ap.error(f"unexpected arguments {positional} (overrides are KEY=VALUE)")
-        run(a.command, a.config, overrides, positional)
+        return fn()
     except KeyboardInterrupt:
         log.warning("interrupted")
         sys.exit(130)

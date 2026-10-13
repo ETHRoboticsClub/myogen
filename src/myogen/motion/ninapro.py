@@ -1,23 +1,13 @@
-"""NinaPro DB1 / DB5 loading and CyberGlove -> posture-latent retargeting.
+"""NinaPro DB1 / DB5: loading, CyberGlove -> posture latent retargeting, and the LatentBank of real motion.
 
-    myogen ninapro-bank      # -> paths.latent_bank (real intent trajectories for the generator)
+    myogen ninapro-bank      # raw NinaPro in paths.ninapro -> paths.latent_bank
 
-Datasets (copied into data/real/):
-  DB1: 27 subjects, 10 Otto Bock electrodes (8 ring at the radio-humeral joint + FDS + EDC spots), EMG is the
-       electrodes' rectified/smoothed output at 100 Hz. CyberGlove 22 at 100 Hz. Sensor 20 duplicates 12.
-  DB5: 10 subjects, two Myo armbands (16 raw channels, 200 Hz, int8), the second ring nearer the hand and
-       rotated 22.5 deg. CyberGlove 22 (upsampled to 200 Hz), Myo accelerometer, forearm circumference.
-  Both: exercise 1 = 12 finger movements, 2 = 17 postures/wrist movements, 3 = 23 grasps, 6 or 10 repetitions.
-
-Glove sensors (standard CyberGlove 22 order, checked against single-finger movements of exercise 1):
-  0 thumb rotation, 1 thumb MCP, 2 thumb IP, 3 thumb-index abduction,
-  4-6 index MCP/PIP/DIP, 7-9 middle MCP/PIP/DIP, 10 middle-index abd, 11-13 ring, 14 ring-middle abd,
-  15-17 little, 18 little-ring abd, 19 palm arch, 20 wrist pitch, 21 wrist yaw.
+DB1: Otto Bock electrodes (rectified envelope, 100 Hz). DB5: two Myo armbands (raw int8, 200 Hz) + accelerometer.
+Both: CyberGlove 22; exercise 1 = finger movements, 2 = postures / wrist, 3 = grasps.
 
 Latent channels the glove does not measure are recovered or imputed and flagged in `imputed`:
-  * pro_sup:   DB5 from the Myo accelerometer (roll of gravity around the forearm axis, gain calibrated per subject
-               on the labelled pronation/supination movements); DB1 from movement labels.
-  * wrist_flex: DB1 from movement labels (its wrist-pitch sensor is a copy of sensor 12).
+pro_sup from the Myo accelerometer (DB5) or the movement labels (DB1); wrist_flex from the labels in DB1 (its
+wrist-pitch sensor duplicates sensor 12).
 """
 import logging
 from pathlib import Path
@@ -27,19 +17,20 @@ import numpy as np
 from scipy import signal
 from scipy.io import loadmat
 
-from .config import user_data_dir
-from .motion import LATENT_NAMES, N_LATENT
+from ..config import user_data_dir
+from .latent import LATENT_NAMES, N_LATENT
 
 log = logging.getLogger(__name__)
 DATA_DIR = user_data_dir() / "real"     # default; commands pass paths.ninapro / paths.latent_bank
 FS = 100  # latent bank rate = generator control rate
 
+# CyberGlove 22 sensor indices (checked against the single-finger movements of exercise 1).
 THUMB_ROT, THUMB_MCP, THUMB_IP, THUMB_ABD = 0, 1, 2, 3
 FINGERS = {"index": (4, 5, 6), "middle": (7, 8, 9), "ring": (11, 12, 13), "little": (15, 16, 17)}
 FINGER_ABD = (10, 14, 18)
 WRIST_PITCH, WRIST_YAW = 20, 21
 
-# Exercise-2 movement ids -> (latent channel, target value) used to impute unmeasured channels.
+# Exercise-2 movement id -> (latent channel, target value), to impute unmeasured channels.
 EX2_TARGETS = {
     9: ("pro_sup", 0.7), 10: ("pro_sup", -0.7), 11: ("pro_sup", 0.7), 12: ("pro_sup", -0.7),
     13: ("wrist_flex", 0.7), 14: ("wrist_flex", -0.7), 17: ("wrist_flex", -0.6),

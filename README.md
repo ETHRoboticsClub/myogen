@@ -33,7 +33,42 @@ recordings in `paths.ninapro` (`ninapro_db1/s*/`, `ninapro_db5/s*/`).
 **Development** (this repository): `python -m venv .venv && .venv/bin/pip install -e ".[test]"`. The root
 `myogen.yml` points `paths.data` at the repository's `data/` and keeps the development defaults (mixed motion).
 
-## Use
+## Simulate one recording
+
+The main interface: one movement recording in, one synthetic sEMG recording out. As a submodule of another
+project: `git submodule add <url> external/myogen && pip install -e external/myogen` (`[biomime]` for the
+motor-unit engine).
+
+```python
+import myogen as mg
+
+motion = mg.Motion.load("motion.h5")              # or mg.Motion(latent=z, fs=100.0, restimulus=None)
+cfg = mg.SimConfig.load("sim.yml")                # or mg.SimConfig(engine="biomime", device="myo", seed=3)
+result = mg.simulate(motion, cfg, out="emg.h5")   # result.emg, .fs_emg, .labels, .qc, .subject_params, ...
+```
+
+```bash
+myogen simulate --write-config sim.yml            # commented default config
+myogen simulate motion.h5 emg.h5 -c sim.yml [--engine analytic|biomime] [--device raw|otto_bock|myo] [--seed N]
+```
+
+**Input** (`myogen/motion/recording.py`): the hand/wrist movement as the 10-D posture latent, `latent (T, 10)` at any
+sample rate `fs`, columns `thumb index middle ring little` closure [0, 1], `thumb_abd` and `spread` [0, 1],
+`wrist_flex wrist_dev pro_sup` [-1, 1]; optional `restimulus (T,)` (0 = rest) sets the relaxed posture. Files
+are `.h5`/`.npz` with datasets `latent`, `restimulus` and `fs` (HDF5: attribute). `Motion` validates shape,
+ranges, NaNs and column order (`latent_names`) on construction; `mg.example_motion()` is a valid example.
+
+**Config** (`myogen/simulation/config.py`, template from `--write-config`): `seed`; `engine` (`analytic` | `biomime`
+with its own block); `device` (`raw` | `otto_bock` | `myo`, electrode layout from a preset, `electrodes` lists
+changes); `subject` (amputee, residual length, forearm radius, fat, EMG gain, noise) and `session` (arm support,
+elbow angle, grip load, co-contraction). Ranged values: a number fixes, `[lo, hi]` draws with `seed`, `null`
+keeps the built-in prior. Unknown keys and out-of-range values are errors naming the key.
+
+**Output** (`myogen/simulation/simulator.py`): HDF5 with `emg` (attr `fs`), `labels/*` at 100 Hz (joint angles, latent,
+muscle activations / excitations, ...), optional `spikes/*`, and the config, sampled subject / session
+parameters and QC as JSON attributes. Same motion + config + seed gives the same recording.
+
+## Datasets
 
 ```bash
 myogen generate          # dataset as configured (generate, electrodes.<device>), with a progress display
@@ -75,7 +110,7 @@ the first one in `generate.out`) with its recording setup: the subject's skin, t
 EMG activity, bipolar poles for BioMime trials), the muscle source points coloured by excitation, gravity (the
 camera is oriented so it points down) and the armrest. The side panel shows the session parameters and a
 scrolling plot of every EMG channel in the electrode colours. Other modes are `demo` (live random natural
-motion) and `live` (muscle excitations over UDP, see `controller.py`).
+motion) and `live` (muscle excitations over UDP, see `viewer/udp_client.py`).
 
 Throughput on this machine (16 cores): ~1.9× real time per worker, **~13 h of data per wall-clock hour** with 14
 workers.
@@ -85,20 +120,15 @@ workers.
 | Path | Content |
 |---|---|
 | `src/myogen/defaults.yml`, `myogen.yml`, `configs/` | packaged defaults; this repository's development config; variants for the NinaPro validation sets |
-| `src/myogen/cli.py`, `api.py`, `config.py`, `log.py` | command line, Python entry point (`myogen.run`), config loading (`extends:`, overrides, paths), rich logging |
-| `src/myogen/build_model.py` | builds the packaged `src/myogen/models/myoforearm_r.xml` from MyoArm (pruning, seated shoulder pose) |
-| `src/myogen/model.py` | model loading (`myoforearm` default, `myohand` legacy), joint/muscle bookkeeping by name, belly geometry |
-| `src/myogen/motion.py` | 10-D posture latent, prototypes, `JointMap`, synthetic trajectory generator |
-| `src/myogen/ninapro.py` | DB1/DB5 loaders, CyberGlove → latent retargeting, `LatentBank` of real intent trajectories |
-| `src/myogen/tracker.py` | computed muscle control with reserves, co-contraction, leaky smoothness, armrest support |
-| `src/myogen/emg.py` | volume-conductor geometry, source synthesis, device emulation (raw / Otto Bock / Myo) |
+| `src/myogen/__init__.py`, `cli.py`, `commands.py`, `config.py`, `log.py` | public API; command line; `myogen.run` (one function per command); config loading (`extends:`, overrides, paths); rich logging |
+| `src/myogen/motion/` | `latent.py` (10-D posture latent, `JointMap`), `recording.py` (`Motion`, the input), `synthetic.py` (natural movement generator), `ninapro.py` (DB1/DB5 loaders, CyberGlove → latent, `LatentBank`) |
+| `src/myogen/body/` | `model.py` (model loading, joint/muscle bookkeeping by name, belly geometry), `loads.py` (passive springs, gravity, armrest, grip load), `tracker.py` (computed muscle control), `build.py` (`myogen build-model`) |
+| `src/myogen/emg/` | `analytic.py` (volume-conductor source model), `acquisition.py` (noise, amplifier, raw / Otto Bock / Myo devices), `biomime/` (motor-unit engine, section 4; `vendor/` holds BioMime's network, GPL-3.0) |
 | `src/myogen/subject.py` | every randomised subject / session / device parameter |
-| `src/myogen/sim.py`, `overlay.py`, `live.py` | web viewer; recording-setup overlay and scrolling EMG; live view during generation |
-| `src/myogen/generate.py` | parallel generation, passive equilibrium, QC, HDF5 shards |
-| `src/myogen/realism.py` | realism gates against NinaPro |
-| `src/myogen/biomime/` | BioMime motor-unit-level EMG backend (section 4); `vendor/` holds BioMime's generator network (GPL-3.0) |
-| `tests/` | `pytest` checks for the config loader and the BioMime backend |
-| `src/myogen/download.py` | `myogen download`: latent bank, MUAP bank, BioMime weights (checksummed) |
+| `src/myogen/simulation/` | `trial.py` (one trial: motion → tracking → EMG → labels, QC), `config.py` + `template.yml` (`SimConfig`), `simulator.py` (`simulate`, output format) |
+| `src/myogen/dataset/` | `generate.py` (parallel generation, HDF5 shards), `realism.py` (realism gates against NinaPro), `download.py` (checksummed downloads) |
+| `src/myogen/viewer/` | `view.py` (web viewer: replay / demo / live), `overlay.py` (recording setup + scrolling EMG), `live.py` (live view during generation), `plots.py` (`myogen inspect*` PNGs), `udp_client.py` (example live sender) |
+| `tests/` | `pytest` checks for the simulation interface, the config loader and the BioMime backend |
 | `src/myogen/models/` | the pinned model snapshot + meshes (packaged, versioned with the code) |
 | `data/real/ninapro_db1/` | 5 DB1 subjects copied from emg2action (raw `.mat`) |
 | `data/real/ninapro_db5/` | all 10 DB5 subjects (`ninapro.hevs.ch/files/DB5_Preproc`; cite Pizzolato et al. 2017) |
@@ -115,7 +145,7 @@ workers.
 | Supination | no supinator/biceps → reserve torques | muscle-driven (reserve 0.09 → ≤ 0.015 Nm) |
 | Shoulder pose | 90° elevation preview pose | **seated, arm by the side**: TRIlong passive force 200–530 N → ~0; passive equilibrium elbow 65°, forearm −19° (physiological) |
 
-`src/myogen/build_model.py` documents the pruning. The shoulder pose was chosen by a grid search minimising passive
+`src/myogen/body/build.py` documents the pruning. The shoulder pose was chosen by a grid search minimising passive
 muscle force over the elbow range. The original pose made the elbow flexors fight a permanent 7–9 Nm passive
 extension torque, i.e. tonic BRA/BRD EMG at rest. The thumb still lacks APB/FPB/AdP (intrinsic muscles,
 invisible to forearm electrodes and absent after amputation) and keeps cheap reserves.
@@ -139,7 +169,7 @@ invisible to forearm electrodes and absent after amputation) and keeps cheap res
 
 ### Motion sources (`generate.motion: synthetic | ninapro | mix`)
 
-`src/myogen/ninapro.py` retargets the 22-sensor CyberGlove to the same 10-D latent the generator uses. The sensor order
+`src/myogen/motion/ninapro.py` retargets the 22-sensor CyberGlove to the same 10-D latent the generator uses. The sensor order
 was verified against the single-finger movements of exercise 1. Two channels the glove does not measure are
 recovered and flagged:
 
@@ -165,7 +195,7 @@ muscle forces and joint springs) on the elbow, part of pronation/supination and 
 produce movement. `free` is an arm held up, which is the prosthesis-use case with tonic elbow-flexor EMG.
 `random` mixes them 50/50.
 
-## 3. Realism against NinaPro (`src/myogen/realism.py`)
+## 3. Realism against NinaPro (`src/myogen/dataset/realism.py`)
 
 Both sides go through the same pipeline: 100 Hz envelopes, per-subject 99th-percentile normalisation, NinaPro rest
 labels. Simulated data uses NinaPro motion from the same database, the emulated device, supported arms and no
@@ -188,7 +218,7 @@ amputees. Latest results:
 decodability. **What fails is behaviour:** real subjects make larger and more sustained efforts during NinaPro
 movements relative to rest than the unloaded simulated hand does (lower rest/move contrast, faster envelope
 fluctuations). The knobs are `hold_tone`, `cocontraction_*`, `load_prob` and the grip-load magnitude in
-`subject.py` / `generate.py`.
+`subject.py` / `simulation/trial.py`.
 
 ### How the gates moved (each fix was a diagnosed cause, not a fitted constant)
 
@@ -205,7 +235,7 @@ fluctuations). The knobs are `hold_tone`, `cocontraction_*`, `load_prob` and the
 ## 4. Motor-unit-level EMG with BioMime (`generate.emg_model: biomime`)
 
 The analytic source model (band-limited noise per muscle) is fast but has no motor units. The BioMime backend
-(`src/myogen/biomime/`) reimplements the NeuroMotion idea (Ma et al. 2024, `docs/`) on our MuJoCo model:
+(`src/myogen/emg/biomime/`) reimplements the NeuroMotion idea (Ma et al. 2024, `docs/`) on our MuJoCo model:
 **spike trains x dynamic MUAPs**, with every intermediate variable available.
 
 ```bash
@@ -217,11 +247,11 @@ myogen biomime-bank info                        # territories, unit counts, gain
 
 | Stage | Module | What it does |
 |---|---|---|
-| anatomy | `biomime/anatomy.py` | maps our 48 muscles into BioMime's forearm: 8 anchor compartments use NeuroMotion's published territories; others use our line-of-action geometry rotated onto the anchors (~33 deg RMS), plus 2 anatomical overrides (BRD, FPL). Deep muscles beyond BioMime's 23 mm training depth are clipped and attenuated (6 mm e-folding, BioMime's own decay). Upper-arm and intrinsic hand muscles are excluded |
-| MUAP bank | `biomime/bank.py` | 128 motor units per muscle (fewer if the muscle has fewer) spanning the size distribution (NeuroMotion Eq. 1-2), each rendered at 5 fibre-length bins (L = 0.85-1.15; depth ~ L^-1/2, CV ~ L^-1, length ~ L), full 10x32 grid, float16 uV. BioMime runs once (~28 ms/MUAP on CPU) |
-| electrodes | `biomime/electrodes.py` | any layout as poles on the periodic grid: rings, staggered rings, targeted, HD grids; bipolar along the fibres with per-device inter-electrode distance; extra fat -> spatial low-pass + attenuation |
-| motor-unit pools | `biomime/mupool.py` | size-ordered pools behind one interface: `FuglevandPool` (rate model, vectorised; ~9->36 Hz, ISI CV 0.14) and `LIFPool` (leaky integrate-and-fire, ~15->28 Hz, CV 0.16-0.3). New neuron models subclass `MotorUnitPool` |
-| synthesis | `biomime/synth.py` | per subject: draws 96 of each muscle's bank units (subject-specific); per session: projects MUAPs onto the electrodes and compresses each channel's templates (rank 19-32 for 99.9 % energy); per trial: spikes are split between the two nearest fibre-length bins, then one sparse product + one batched FFT convolution. Fibres per muscle follow PCSA x NeuroMotion's cadaver-corrected density (40k-190k); units beyond BioMime's 870-fibre range scale linearly |
+| anatomy | `emg/biomime/anatomy.py` | maps our 48 muscles into BioMime's forearm: 8 anchor compartments use NeuroMotion's published territories; others use our line-of-action geometry rotated onto the anchors (~33 deg RMS), plus 2 anatomical overrides (BRD, FPL). Deep muscles beyond BioMime's 23 mm training depth are clipped and attenuated (6 mm e-folding, BioMime's own decay). Upper-arm and intrinsic hand muscles are excluded |
+| MUAP bank | `emg/biomime/bank.py` | 128 motor units per muscle (fewer if the muscle has fewer) spanning the size distribution (NeuroMotion Eq. 1-2), each rendered at 5 fibre-length bins (L = 0.85-1.15; depth ~ L^-1/2, CV ~ L^-1, length ~ L), full 10x32 grid, float16 uV. BioMime runs once (~28 ms/MUAP on CPU) |
+| electrodes | `emg/biomime/electrodes.py` | any layout as poles on the periodic grid: rings, staggered rings, targeted; bipolar along the fibres with per-device inter-electrode distance; extra fat -> spatial low-pass + attenuation |
+| motor-unit pools | `emg/biomime/mupool.py` | size-ordered pools behind one interface: `FuglevandPool` (rate model, vectorised; ~9->36 Hz, ISI CV 0.14) and `LIFPool` (leaky integrate-and-fire, ~15->28 Hz, CV 0.16-0.3). New neuron models subclass `MotorUnitPool` |
+| synthesis | `emg/biomime/synth.py` | per subject: draws 96 of each muscle's bank units (subject-specific); per session: projects MUAPs onto the electrodes and compresses each channel's templates (rank 19-32 for 99.9 % energy); per trial: spikes are split between the two nearest fibre-length bins, then one sparse product + one batched FFT convolution. Fibres per muscle follow PCSA x NeuroMotion's cadaver-corrected density (40k-190k); units beyond BioMime's 870-fibre range scale linearly |
 | acquisition | `emg.acquire` | the same noise / mains / artifact / amplifier / device chain as the analytic model |
 
 With `generate.save_spikes: true`, each trial also stores `spikes/{unit, sample}` (2048 Hz) and `spikes/units/{muscle, rank,
@@ -258,7 +288,7 @@ drive on all muscles in 3.4 s. Low-rank synthesis is within 5 % of exact shift-a
 - Between-subject variability comes from motor-unit sampling, pool parameters, skin, electrodes and devices. It
   does not come from anatomy: that would need a retrained or anatomy-conditioned BioMime.
 - The public checkpoint has 6 conditions (no fat conductivity); skin is modelled outside the network.
-- **License and citation:** BioMime's generator network is vendored in `src/myogen/biomime/vendor/`
+- **License and citation:** BioMime's generator network is vendored in `src/myogen/emg/biomime/vendor/`
   (GPL-3.0, unmodified apart from one import; licence text, source commit and BibTeX in its `README.md`). The
   pretrained weights are downloaded, not committed. The NeuroMotion territory table in `anatomy.py` is cited
   data; no NeuroMotion code is used. Because GPL-3.0 code is part of the repository, distributing it means

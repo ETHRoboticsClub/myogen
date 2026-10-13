@@ -1,8 +1,7 @@
-"""Live view of a running generation (generate.live_view): worker 0 streams its simulation to the web viewer.
+"""Live view of a running generation (generate.live_view: true): worker 0 streams its simulation to the viewer.
 
-The arm moves as it is simulated (~2x real time), with the trial's recording setup (skin, electrodes, muscle
-sources coloured by the controller's excitation, gravity, armrest). EMG is synthesised after each trial, so the
-live view has no EMG traces; replay a finished trial with `myogen view` for those.
+The arm moves as it is simulated, with the trial's recording setup; EMG is synthesised after each trial, so it is
+not shown here (replay finished trials with `myogen view`).
 """
 import logging
 import time
@@ -10,8 +9,8 @@ import time
 import mujoco
 from mjviser.scene import ViserMujocoScene
 
-from .log import viser_server
-from .model import load
+from ..body.model import load
+from ..log import viser_server
 from .overlay import TrialOverlay
 
 log = logging.getLogger(__name__)

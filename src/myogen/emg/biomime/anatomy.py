@@ -1,30 +1,19 @@
-"""Map MuJoCo muscles into BioMime's forearm: motor-unit territories, counts and sizes, grid geometry.
+"""Map our MuJoCo muscles into BioMime's forearm: motor-unit territories, counts and sizes, grid placement.
 
-BioMime encodes one numerically modelled forearm. Motor-unit position is given by (depth below the skin, angle
-as a fraction of the circumference); the 10 x 32 grid has 32 columns around the forearm (column = 32 * angle)
-and 10 rows along the fibres.
-
-Territories:
-  * anchors: the 8 muscle compartments BioMime was trained on, with the territory ranges published in NeuroMotion
-    (NeuroMotion/MNPoollib/mn_params.py, Ma et al. 2024). These match the volume conductor exactly.
-  * other muscles: our MuJoCo line-of-action geometry mapped into BioMime angles with a rotation fitted on the
-    anchors (~33 deg RMS residual); depth = skin radius - line-of-action radius scaled into the reference
-    cross-section (same mapping as the analytic EMG model); extent from the muscle size.
-    Depths beyond the training range (deep flexors, supinator) are clipped and compensated with an attenuation.
-  * ANATOMY_OVERRIDES: muscles whose MuJoCo line of action is misleading at the electrode level (it passes near
-    the radius), placed from standard cross-sectional anatomy instead.
-
-Grid axial placement is NOT documented by BioMime/NeuroMotion; GridGeometry makes the assumption explicit:
-rows at the standard 10 mm HD-grid pitch starting ~1.5 cm below the elbow (6-42 % of forearm length, proximal
-first), i.e. covering the proximal bellies where armbands sit. It can be recalibrated without regenerating
-MUAPs (`myogen biomime-bank regrid`).
+A territory is a (depth below the skin, angle as a fraction of the circumference) range; grid column = 32 * angle.
+  * anchors: the 7 compartments BioMime was trained on, with NeuroMotion's published territories (exact)
+  * other muscles: our line-of-action geometry rotated into BioMime angles (rotation fitted on the anchors),
+    depth from the line-of-action radius; deeper than the training range -> clipped + extra attenuation
+  * ANATOMY_OVERRIDES: muscles whose line of action is misleading at electrode level, from cross-sectional anatomy
+Where the grid sits along the forearm is not documented by BioMime: GridGeometry states the assumption (rows at
+6-42 % of forearm length) and `myogen biomime-bank regrid` changes it without regenerating MUAPs.
 """
 from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..model import belly_points
-from .model import RANGES
+from ...body.model import belly_points
+from .generator import RANGES
 
 # NeuroMotion mn_params.py (Ma et al. 2024): depth (m), angle (fraction), area (mm^2), number of MUs.
 ANCHOR_TABLE = {
@@ -50,18 +39,15 @@ ANATOMY_OVERRIDES = {
     "BRD_r": ((0.33, 0.45), (0.007, 0.014)),   # superficial, radial border between the flexors and ECRL
     "FPL_r": ((0.20, 0.30), (0.024, 0.030)),   # deep, palmar-radial, under FDS
 }
-R_MODEL_REF = 0.032          # m, outermost MyoHand/MyoArm line-of-action radius (as in src/emg.py)
+R_MODEL_REF = 0.032          # m, as in emg/analytic.py
 FAT_REF = 0.003              # m, assumed subcutaneous fat of BioMime's reference forearm
 RADIAL_FILL = 0.9
 
-# Fibres per muscle from PCSA (max isometric force / 50.8 N/cm^2) and NeuroMotion's cadaver-corrected fibre
-# density (34 um fibres, FDI correction -> ~19.8k fibres per cm^2 of PCSA, i.e. 40k-140k per forearm muscle).
-# The simpler 200 fibres/mm^2 x territory area in NeuroMotion's example script gives ~8x fewer fibres and
-# ~20x too little sEMG amplitude.
+# Fibres per muscle: PCSA (max force / specific tension) x NeuroMotion's cadaver-corrected fibre density.
 SPECIFIC_TENSION = 50.8      # N / cm^2
 FIBRES_PER_CM2 = 19_800
 MU_PER_MM2 = 3.2             # median of the anchors (number of MUs / area)
-DEPTH_EXTRA_DECAY = 0.006    # m: e-folding of BioMime's own depth decay (13x over 7-23 mm), continued beyond its range
+DEPTH_EXTRA_DECAY = 0.006    # m: BioMime's own depth decay, continued beyond its range
 
 
 @dataclass

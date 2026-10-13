@@ -1,8 +1,8 @@
-"""Forearm web viewer (mjviser, http://localhost:8080): `myogen view`, settings in config.yml (view).
+"""`myogen view`: the forearm in the web viewer (mjviser, http://localhost:8080).
 
-    replay   play back a generated trial with its recording setup and scrolling EMG (see overlay.py)
-    demo     live computed-muscle-control of random natural motion
-    live     muscle excitations from UDP (nu floats in [0, 1], see controller.py)
+    replay   a generated trial with its recording setup and scrolling EMG (overlay.py)
+    demo     live muscle control of random natural motion
+    live     muscle excitations received over UDP (udp_client.py is an example sender)
 """
 import logging
 import socket
@@ -13,19 +13,21 @@ import mujoco
 import numpy as np
 from mjviser import Viewer
 
-from .log import viser_server
-from .model import Anatomy, load
-from .motion import JointMap, intent_trajectory
+from ..body.model import Anatomy, load
+from ..body.tracker import MuscleTracker, TrackerConfig
+from ..log import viser_server
+from ..motion.latent import JointMap
+from ..motion.synthetic import intent_trajectory
 from .overlay import TrialOverlay
-from .tracker import MuscleTracker, TrackerConfig
+from .udp_client import UDP_PORT
 
-PORT = 5006   # e3m5_hand uses 5005
 log = logging.getLogger(__name__)
 
 
 def live(m, d):
+    """Apply the newest UDP packet of nu float32 excitations in [0, 1] at every step."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind(("0.0.0.0", PORT))
+    sock.bind(("0.0.0.0", UDP_PORT))
     sock.setblocking(False)
     fmt = f"{m.nu}f"
     size = struct.calcsize(fmt)
@@ -41,12 +43,13 @@ def live(m, d):
             d.ctrl[:] = np.clip(struct.unpack(fmt, packet), 0.0, 1.0)
         mujoco.mj_step(m, d)
 
-    log.info(f"listening for {m.nu} muscle excitations on udp://0.0.0.0:{PORT}")
+    log.info(f"listening for {m.nu} muscle excitations on udp://0.0.0.0:{UDP_PORT}")
     log.info("order: " + " ".join(m.actuator(i).name for i in range(m.nu)))
     return step
 
 
 def demo(m, d):
+    """Track endless random natural motion with the muscle controller."""
     anat = Anatomy.from_model(m, d)
     rng = np.random.default_rng()
     fs = 100
@@ -80,6 +83,7 @@ def demo(m, d):
 
 
 def replay(m, d, server, path, trial=None, emg_window=4.0):
+    """Loop a stored trial (first in the shard by default) with its recording-setup overlay."""
     with h5py.File(path, "r") as f:
         trial = trial or sorted(f.keys())[0]
         g = f[trial]

@@ -1,19 +1,10 @@
-"""3D overlay of a generated trial's recording setup in the web viewer (`myogen view`, replay mode).
+"""The recording setup of a trial, drawn over the arm in the web viewer, in the forearm frame so it moves with it:
 
-Everything is drawn in the forearm frame (src.model.forearm_frame: elbow origin, z along the forearm, attached to
-the ulna), the same frame the EMG models use, so it rides with the arm during replay:
+  * skin (tapered, cut at the residual length), electrodes (coloured by channel or EMG activity)
+  * muscle source points coloured by excitation (BioMime trials: muscle positions, not MU territories)
+  * gravity arrow, armrest (supported sessions), and a scrolling plot of every EMG channel
 
-  * skin: the subject's tapered forearm (forearm_radius, taper), cut at the residual length for amputees
-  * electrodes: the stored per-trial positions (analytic model: `electrodes_m`; BioMime: the bipolar poles in
-    BioMime grid coordinates, mapped back with the anchor-fitted angle offset), coloured by channel or by EMG
-  * muscle sources: the analytic model's belly source points mapped into this subject's cross-section,
-    coloured by neural excitation (for BioMime trials they show where the muscles are, not the MU territories)
-  * gravity arrow (the camera's up direction is set against it) and, for supported sessions, the armrest
-  * a scrolling plot of every EMG channel (stacked, each normalised to its 99th percentile, min/max decimated),
-    in the same colours as the electrodes
-
-It is built from the trial's parameters, so it works for a stored trial (TrialOverlay.from_trial, replay) and for
-one that is still being simulated (generate.live_view: no EMG yet, excitations passed to update()).
+Built from the trial's parameters: works for stored trials (replay) and for running ones (live view, no EMG).
 """
 import colorsys
 import json
@@ -23,38 +14,22 @@ import weakref
 import mujoco
 import numpy as np
 import viser.transforms as vtf
-import viser.uplot as uplot
 from matplotlib import colormaps
 from scipy import signal
 
-from .emg import EMGGeometry
-from .model import Anatomy, forearm_frame
-from .subject import ElectrodeLayout, Session, Subject
+from ..body.model import Anatomy, forearm_frame
+from ..emg.analytic import EMGGeometry
+from ..subject import Session, Subject
 
 ENV_SMOOTH_S = 0.1   # moving-average window of the EMG envelope used to colour electrodes
 PLOT_BINS = 400      # min/max bins across the EMG plot window
-PLOT_PERIOD = 0.1    # s between EMG plot updates (wall clock)
+PLOT_PERIOD = 0.1    # s between EMG plot / electrode colour updates (wall clock)
+SOURCES_PERIOD = 0.25  # s between muscle-source updates: re-sending the point cloud every frame stalls the viewer
 _CAMERA_SET = weakref.WeakKeyDictionary()   # server -> client ids whose camera was already placed
 
 
 def _params(p):
     return json.loads(p) if isinstance(p, str) else dict(p)
-
-
-def _subject(params):
-    p = _params(params)
-    p["layout"] = ElectrodeLayout(**{**p["layout"], "targets": tuple(p["layout"]["targets"])})
-    return Subject(**{k: np.asarray(v) if isinstance(v, list) else v for k, v in p.items()})
-
-
-def _session(params):
-    return Session(**{k: np.asarray(v) if isinstance(v, list) else v for k, v in _params(params).items()})
-
-
-def _channel_names(layout):
-    per_ring = (layout.n_channels - len(layout.targets)) // layout.rings
-    return ([f"ring{r}_{k}" for r in range(layout.rings) for k in range(per_ring)]
-            + [f"target_{t}" for t in layout.targets])
 
 
 def _envelope(emg, fs):
@@ -77,6 +52,8 @@ def _frustum(r0, r1, length, n=48):
 
 
 class TrialOverlay:
+    """Recording-setup overlay of one trial; call update() every rendered frame."""
+
     @classmethod
     def from_trial(cls, server, m, d, g, q0, emg_window=4.0):
         """g: a stored trial's HDF5 group."""
@@ -86,71 +63,80 @@ class TrialOverlay:
 
     def __init__(self, server, m, d, subject_params, session_params, meta, q0, exc=None, fs_label=100.0, emg=None,
                  fs_emg=None, emg_window=4.0):
-        """subject_params / session_params: dicts or JSON (as stored per trial); meta: trial meta with the electrode
-        positions; q0: first posture (targeted electrodes / sources are set up there); exc: (T, nu) excitations at
-        fs_label (or pass them to update()); emg: (T, C) at fs_emg for electrode colours and the scrolling plot."""
+        """subject_params / session_params: dicts or JSON (as stored per trial); meta: the trial meta (electrode
+        positions); q0: first posture; exc: (T, nu) excitations at fs_label (or pass them to update());
+        emg: (T, C) at fs_emg, for electrode colours and the scrolling plot."""
         self.server, self.m = server, m
-        self.sub, self.ses = _subject(subject_params), _session(session_params)
+        self.sub = Subject.from_dict(_params(subject_params))
+        self.ses = Session.from_dict(_params(session_params))
         self.anat = Anatomy.from_model(m, d)
-        L = self.anat.forearm_length
         self.exc, self.fs_label, self.fs_emg = exc, fs_label, fs_emg
-        self.env = self.plot = None
-        if emg is not None:
-            emg = emg.astype(np.float32)
-            self.env = _envelope(emg, fs_emg)
-            # Stacked traces: channel 0 on top, each scaled to +-0.5 of its 99th percentile.
-            C = emg.shape[1]
-            self.stacked = emg / (2 * np.maximum(np.percentile(np.abs(emg), 99, axis=0), 1e-9)) + np.arange(C)[::-1]
-            self.win = min(int(emg_window * fs_emg), len(emg)) // PLOT_BINS * PLOT_BINS or len(emg)
-        self._last_plot = 0.0
+        self._last_plot = self._last_sources = self._last_colors = 0.0
+        self._prepare_emg(emg, emg_window)
 
         d0 = mujoco.MjData(m)
         d0.qpos[:] = q0
         mujoco.mj_forward(m, d0)
         self.geom = EMGGeometry(m, d0, self.anat, self.sub, self.ses)
-        skin = self.geom.skin_radius
+        names, poles, self.owner, pairs = self._electrode_poles(meta)
+        self.chan_rgb = np.array([colorsys.hsv_to_rgb(k / len(names), 0.85, 1.0) for k in range(len(names))])
+        self._add_forearm(names, poles, pairs, d0)
+        self._add_gravity_and_armrest(d0)
+        self.folders = [self._gui(meta, len(names))]
+        if self.env is not None:
+            self.folders.append(self._emg_plot(names))
 
-        # Electrode poles (P, 3) in the forearm frame, the channel each belongs to, and a label anchor per channel.
+    def _prepare_emg(self, emg, emg_window):
+        self.env = self.plot = None
+        if emg is None:
+            return
+        emg = emg.astype(np.float32)
+        self.env = _envelope(emg, self.fs_emg)
+        # Stacked traces: channel 0 on top, each scaled to +-0.5 of its 99th percentile.
+        C = emg.shape[1]
+        self.stacked = emg / (2 * np.maximum(np.percentile(np.abs(emg), 99, axis=0), 1e-9)) + np.arange(C)[::-1]
+        self.win = min(int(emg_window * self.fs_emg), len(emg)) // PLOT_BINS * PLOT_BINS or len(emg)
+
+    def _electrode_poles(self, meta):
+        """(channel names, poles (P, 3) in the forearm frame, channel of each pole, bipolar pairs (n, 2, 3))."""
         if "electrodes_m" in meta:
             poles = np.asarray(meta["electrodes_m"])
-            names = _channel_names(self.sub.layout)
-            owner = np.arange(len(poles))
-            pairs = np.zeros((0, 2, 3))
-        else:
-            from .biomime.anatomy import fit_angle_transform
-            ref = mujoco.MjData(m)                      # the MUAP bank's territories were fitted at the model's default pose
-            mujoco.mj_forward(m, ref)
-            offset, _ = fit_angle_transform(m, ref, Anatomy.from_model(m, ref))
-            names = [ch["name"] for ch in meta["electrodes"]]
-            pts, owner = [], []
-            for c, ch in enumerate(meta["electrodes"]):
-                for a, zf, _ in ch["poles"]:
-                    th, z = 2 * np.pi * a - offset, zf * L
-                    pts.append([skin(z) * np.cos(th), skin(z) * np.sin(th), z])
-                    owner.append(c)
-            poles, owner = np.asarray(pts), np.asarray(owner)
-            pairs = np.stack([poles[owner == c][:2] for c in range(len(names)) if (owner == c).sum() >= 2])
-        self.owner = owner
-        C = len(names)
-        self.chan_rgb = np.array([colorsys.hsv_to_rgb(k / C, 0.85, 1.0) for k in range(C)])
-        centre = np.stack([poles[owner == c].mean(0) for c in range(C)])
+            return self.sub.layout.channel_names(), poles, np.arange(len(poles)), np.zeros((0, 2, 3))
+        # BioMime poles are in grid coordinates; map back with the angle offset fitted at the default pose
+        # (where the MUAP bank's territories were fitted).
+        from ..emg.biomime.anatomy import fit_angle_transform
+        ref = mujoco.MjData(self.m)
+        mujoco.mj_forward(self.m, ref)
+        offset, _ = fit_angle_transform(self.m, ref, Anatomy.from_model(self.m, ref))
+        skin, L = self.geom.skin_radius, self.anat.forearm_length
+        names = [ch["name"] for ch in meta["electrodes"]]
+        pts, owner = [], []
+        for c, ch in enumerate(meta["electrodes"]):
+            for a, zf, _ in ch["poles"]:
+                th, z = 2 * np.pi * a - offset, zf * L
+                pts.append([skin(z) * np.cos(th), skin(z) * np.sin(th), z])
+                owner.append(c)
+        poles, owner = np.asarray(pts), np.asarray(owner)
+        pairs = np.stack([poles[owner == c][:2] for c in range(len(names)) if (owner == c).sum() >= 2])
+        return names, poles, owner, pairs
 
-        # Scene: /experiment follows the viewer's camera-tracking offset, /experiment/forearm the forearm frame.
-        sc = server.scene
+    def _add_forearm(self, names, poles, pairs, d0):
+        """/experiment follows the viewer's camera-tracking offset, /experiment/forearm the forearm frame."""
+        sc, skin = self.server.scene, self.geom.skin_radius
         self.root = sc.add_frame("/experiment", show_axes=False)
         self.forearm = sc.add_frame("/experiment/forearm", show_axes=False)
-        z_end = self.sub.residual_length * L
+        z_end = self.sub.residual_length * self.anat.forearm_length
         v, f = _frustum(skin(0.0), skin(z_end), z_end)
         self.skin = sc.add_mesh_simple("/experiment/forearm/skin", v, f, color=(230, 190, 160), opacity=0.25,
                                        side="double", cast_shadow=False, receive_shadow=False)
         self.electrodes = sc.add_point_cloud("/experiment/forearm/electrodes", poles.astype(np.float32),
-                                             self._rgb(self.chan_rgb[owner]), point_size=0.008,
+                                             self._rgb(self.chan_rgb[self.owner]), point_size=0.008,
                                              point_shape="circle")
         self.pairs = (sc.add_line_segments("/experiment/forearm/bipolar", pairs, colors=(40, 40, 40),
                                            line_width=3.0) if len(pairs) else None)
-        self.labels = [sc.add_label(f"/experiment/forearm/labels/{n}", n,
-                                    position=c * [1.18, 1.18, 1.0], font_screen_scale=0.7)
-                       for n, c in zip(names, centre)]
+        centre = np.stack([poles[self.owner == c].mean(0) for c in range(len(names))])
+        self.labels = [sc.add_label(f"/experiment/forearm/labels/{n}", n, position=c * [1.18, 1.18, 1.0],
+                                    font_screen_scale=0.7) for n, c in zip(names, centre)]
         src = self.geom.sources(d0)
         self.alive = ((src[..., 2] < z_end) & (src[..., 2] > -0.02)).reshape(-1)   # as in EMGGeometry.gains
         self.cmap = colormaps["inferno"]
@@ -158,28 +144,25 @@ class TrialOverlay:
                                           np.zeros((int(self.alive.sum()), 3), np.uint8), point_size=0.004,
                                           point_shape="circle")
 
-        # Gravity (stored after generation's armrest projection) and the armrest for supported sessions.
+    def _add_gravity_and_armrest(self, d0):
+        """Gravity arrow (the camera's up is against it), camera placement, and the armrest if supported."""
+        sc, L = self.server.scene, self.anat.forearm_length
         gdir = np.asarray(self.ses.gravity_dir, float)
         sc.set_up_direction(tuple(-gdir))
-        elbow, axes = forearm_frame(m, d0)
+        elbow, axes = forearm_frame(self.m, d0)
         tip = elbow - 0.18 * gdir + 0.04 * axes[2]
         sc.add_arrows("/experiment/gravity", np.stack([tip, tip + 0.12 * gdir])[None], colors=(60, 120, 255),
                       shaft_radius=0.003, head_radius=0.008, head_length=0.02)
         sc.add_label("/experiment/gravity_label", "g", position=tip + 0.06 * gdir + 0.015 * axes[0])
-        # Camera: looking at the mid-forearm from above and to the side (gravity down).
-        self.look = elbow + 0.5 * L * axes[2]
+        self.look = elbow + 0.5 * L * axes[2]                   # mid-forearm, seen from above and to the side
         self.eye = self.look - 0.4 * gdir + 0.45 * np.cross(gdir, axes[2])
         if self.ses.arm_support > 0.5:
             x = axes[2] - (axes[2] @ gdir) * gdir
             x /= np.linalg.norm(x)
             R = np.stack([x, np.cross(-gdir, x), -gdir], 1)
-            ctr = elbow + 0.5 * L * x + (skin(0.5 * L) + 0.004) * gdir
+            centre = elbow + 0.5 * L * x + (self.geom.skin_radius(0.5 * L) + 0.004) * gdir
             sc.add_box("/experiment/armrest", color=(120, 110, 100), dimensions=(1.2 * L, 0.12, 0.006),
-                       position=ctr, wxyz=vtf.SO3.from_matrix(R).wxyz, opacity=0.6)
-
-        self.folders = [self._gui(meta, C)]
-        if self.env is not None:
-            self.folders.append(self._emg_plot(names))
+                       position=centre, wxyz=vtf.SO3.from_matrix(R).wxyz, opacity=0.6)
 
     def remove(self):
         """Take everything this overlay added off the scene and the panel."""
@@ -205,7 +188,7 @@ class TrialOverlay:
                 f"elbow {np.degrees(ses.elbow_angle):.0f}°")
             for name, handles in [("Skin", [self.skin]), ("Electrodes", [self.electrodes, self.pairs]),
                                   ("Channel labels", self.labels), ("Muscle sources", [self.sources])]:
-                cb = gui.add_checkbox(name, initial_value=name != "Channel labels")
+                cb = gui.add_checkbox(name, initial_value=name not in ("Channel labels", "Muscle sources"))
                 for h in handles:
                     if h:
                         h.visible = cb.value
@@ -249,24 +232,28 @@ class TrialOverlay:
                 seen.add(cid)
                 client.camera.position, client.camera.look_at = self.eye + offset, self.look + offset
         elbow, axes = forearm_frame(self.m, d)
+        now = time.perf_counter()
+        sources_due = now - self._last_sources > SOURCES_PERIOD
+        colors_due = now - self._last_colors > PLOT_PERIOD
         with self.server.atomic():
             self.root.position = offset
             self.forearm.position = elbow
             self.forearm.wxyz = vtf.SO3.from_matrix(axes.T).wxyz
             if exc is None and self.exc is not None:
                 exc = self.exc[int(t * self.fs_label) % len(self.exc)]
-            if self.sources.visible and exc is not None:
+            if self.sources.visible and exc is not None and sources_due:
+                self._last_sources = now
                 self.sources.points = self.geom.sources(d).reshape(-1, 3)[self.alive].astype(np.float32)
                 drive = np.repeat(exc, self.geom.K)[self.alive]
                 self.sources.colors = self._rgb(self.cmap(0.15 + 0.85 * drive)[:, :3])
-            if self.electrodes.visible:
+            if self.electrodes.visible and colors_due:
+                self._last_colors = now
                 if self.color_mode.value == "channel" or self.env is None:
                     rgb = self.chan_rgb[self.owner]
                 else:
                     a = self.env[int(t * self.fs_emg) % len(self.env)][self.owner, None]
                     rgb = (0.25 + 0.75 * a) * self.chan_rgb[self.owner] + 0.15 * (1 - a)
                 self.electrodes.colors = self._rgb(rgb)
-        now = time.perf_counter()
         if self.plot is not None and now - self._last_plot > PLOT_PERIOD:
             self._last_plot = now
             self.plot.data = self._emg_window(t)

@@ -1,21 +1,17 @@
-"""Realism gates: compare synthetic data with NinaPro DB1 / DB5 on the same statistics.
+"""`myogen realism`: compare generated EMG with NinaPro DB1 / DB5 on the same statistics.
 
-    python -m src.generate --out data/val_db1 --device otto_bock --motion ninapro --bank-datasets db1 ...
-    python -m src.realism --real db1 --sim data/val_db1 --out reports/realism_db1
+Both sides become 100 Hz envelopes (DB1: the electrodes' own output; Myo: 150 ms moving RMS), normalised per
+subject and channel by the 99th percentile, then:
 
-Both sides go through the same pipeline: 100 Hz envelopes (DB1: the electrodes' own output; DB5/Myo: 150 ms
-moving RMS of the raw 200 Hz signal), normalised per subject and channel by the 99th percentile (as in the
-emg2action training pipeline), then:
-
-  amplitude    distribution of normalised envelopes; rest/movement ratio (NinaPro restimulus labels)
-  correlation  envelope correlation between ring electrodes vs. their distance around the ring
-  dimension    participation ratio of the ring envelopes (how many independent sources they expose)
+  amplitude    envelope distribution; rest / movement ratio
+  correlation  ring-electrode envelope correlation vs. distance around the ring
+  dimension    participation ratio of the ring envelopes
   smoothness   envelope autocorrelation at 50 / 200 ms
-  lag          rising EMG activity vs. hand speed cross-correlation peak (> 0: EMG leads)
-  decoding     within-subject ridge regression log-envelope -> hand latent, R^2 on interleaved held-out blocks
-  raw (Myo)    PSD shape, median frequency, |x| <= 1 count at rest, clipping
+  lag          rising EMG activity vs. hand speed (> 0: EMG leads)
+  decoding     within-subject ridge regression log-envelope -> hand latent, held-out R^2
+  raw (Myo)    PSD shape, median frequency, small values at rest, clipping
 
-A gate passes when the synthetic value falls inside the real between-subject range (min..max, with a margin).
+A gate passes when the synthetic mean falls inside the real between-subject range (with a margin).
 """
 import json
 import logging
@@ -29,8 +25,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy import signal
 
-from .log import console
-from .ninapro import DATA_DIR, list_subjects, load_mat, subject_files
+from ..log import console
+from ..motion.ninapro import DATA_DIR, list_subjects, load_mat, subject_files
 
 log = logging.getLogger(__name__)
 
@@ -49,8 +45,7 @@ def raw_to_env(raw, fs):
     return env[:: fs // FS] if fs > FS else env
 
 
-# ---------------------------------------------------------------------------------------------- loading
-
+# -- loading ---------------------------------------------------------------------------------------------------
 
 def load_real(dataset, max_subjects=None, bank=DATA_DIR / "latent_bank.h5", root=DATA_DIR):
     """One record per subject: env (T, C), raw or None, restimulus (T,), latent (T, 10)."""
@@ -106,8 +101,7 @@ def load_sim(sim_dir, max_subjects=None):
     return out
 
 
-# ---------------------------------------------------------------------------------------------- statistics
-
+# -- statistics ------------------------------------------------------------------------------------------------
 
 def _ring(env):
     return env[:, :8]
@@ -206,19 +200,17 @@ def plot(real, sim, title, path):
     ax[0, 1].plot(sim["corr_vs_distance"], "s-", label="sim")
     ax[0, 1].set_title("ring envelope correlation vs. electrode distance")
     ax[0, 1].set_xlabel("electrodes apart")
-    keys = [k for k in SCALARS if k in real and k in sim and k not in ("median_freq_hz",)]
+    if "lag_ms" in real and "lag_ms" in sim:
+        a = ax[0, 2]
+        a.bar([0, 1], [real["lag_ms"]["mean"], sim["lag_ms"]["mean"]], color=["C0", "C1"])
+        a.errorbar([0], [real["lag_ms"]["mean"]], yerr=_range(real["lag_ms"]), color="k", capsize=4)
+        a.set_xticks([0, 1], ["real", "sim"])
+        a.set_title("EMG-to-movement lag (ms, >0: EMG leads)")
+    keys = [k for k in SCALARS if k in real and k in sim and k not in ("median_freq_hz", "lag_ms")]
     for i, k in enumerate(keys):
-        a = ax[0, 2] if k in ("lag_ms",) else ax[1, 0]
-        if k == "lag_ms":
-            a.bar([0, 1], [real[k]["mean"], sim[k]["mean"]], color=["C0", "C1"])
-            a.errorbar([0], [real[k]["mean"]], yerr=[[real[k]["mean"] - real[k]["min"]], [real[k]["max"] - real[k]["mean"]]],
-                       color="k", capsize=4)
-            a.set_xticks([0, 1], ["real", "sim"])
-            a.set_title("EMG-to-movement lag (ms, >0: EMG leads)")
-            continue
-        a.errorbar([i - 0.12], [real[k]["mean"]], yerr=[[real[k]["mean"] - real[k]["min"]], [real[k]["max"] - real[k]["mean"]]],
-                   fmt="o", color="C0", capsize=4, label="real (range)" if i == 0 else None)
-        a.plot([i + 0.12], [sim[k]["mean"]], "s", color="C1", label="sim" if i == 0 else None)
+        ax[1, 0].errorbar([i - 0.12], [real[k]["mean"]], yerr=_range(real[k]), fmt="o", color="C0", capsize=4,
+                          label="real (range)" if i == 0 else None)
+        ax[1, 0].plot([i + 0.12], [sim[k]["mean"]], "s", color="C1", label="sim" if i == 0 else None)
     ax[1, 0].set_xticks(range(len(keys)), keys, rotation=30, ha="right", fontsize=8)
     ax[1, 0].set_title("scalar statistics")
     ax[1, 0].legend()
@@ -234,6 +226,11 @@ def plot(real, sim, title, path):
     fig.suptitle(title)
     fig.tight_layout()
     fig.savefig(path, dpi=110)
+
+
+def _range(stat):
+    """Error bar from the mean to the real min / max."""
+    return [[stat["mean"] - stat["min"]], [stat["max"] - stat["mean"]]]
 
 
 def run(real_name, sim_dir, out, max_subjects=None, bank=DATA_DIR / "latent_bank.h5", root=DATA_DIR):

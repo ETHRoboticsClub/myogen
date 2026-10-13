@@ -1,13 +1,10 @@
-"""`myogen download`: fetch the inputs that are too large for the package into paths.* (default: the user data
-directory, see config.user_data_dir).
+"""`myogen download`: inputs too large for the package, into paths.* (default: the user data directory).
 
-  latent-bank      real NinaPro intent trajectories (generate.motion: ninapro / mix)      download.base_url
-  muap-bank        BioMime MUAP bank (generate.emg_model: biomime)                        download.base_url
-  biomime-weights  BioMime pretrained generator, only to rebuild the MUAP bank            authors' Google Drive
+  latent-bank      real NinaPro motion (generate.motion: ninapro / mix)     from download.base_url
+  muap-bank        BioMime MUAP bank (generate.emg_model: biomime)          from download.base_url
+  biomime-weights  BioMime generator, only to rebuild the MUAP bank         from the authors' Google Drive
 
-Files are checked against the SHA-256 this version of the code was validated with; a mismatch is an error
-(the hosted file changed: update the checksum here deliberately). Alternatives to downloading: `myogen
-ninapro-bank` (from raw NinaPro data in paths.ninapro) and `myogen biomime-bank build` (needs the weights).
+Files are checked against the SHA-256 this code was validated with; a mismatch is an error.
 """
 import hashlib
 import logging
@@ -18,7 +15,7 @@ from pathlib import Path
 
 from rich.progress import BarColumn, DownloadColumn, Progress, TextColumn, TimeRemainingColumn, TransferSpeedColumn
 
-from .log import console
+from ..log import console
 
 log = logging.getLogger(__name__)
 

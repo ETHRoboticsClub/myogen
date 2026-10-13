@@ -1,22 +1,9 @@
-"""Build the workspace forearm model from MyoArm and save it as a pinned, editable XML snapshot.
+"""Build the packaged forearm model from MyoArm (`myogen build-model` -> models/myoforearm_r.xml + meshes/).
 
-    myogen build-model            # -> models/myoforearm_r.xml (+ models/meshes/)
-
-Why not MyoHand: a proximal electrode ring (NinaPro DB1/DB5 placement, at the radio-humeral joint) sits over
-supinator, brachioradialis and anconeus bellies, and supination is driven by the biceps. MyoHand has none of
-these, so its proximal EMG is missing large sources and supination needs reserve torques. This model keeps:
-
-  * joints: elbow flexion, pronation/supination, wrist (2), thumb (4), fingers (16)   -> 24 DoF
-  * muscles: the 39 MyoHand muscles + ANC, SUP, BIClong, BICshort, BRA, BRD, TRIlong, TRIlat, TRImed -> 48
-  * the humerus is welded with the arm by the side (seated posture; shoulder muscles removed)
-
-The shoulder pose matters because TRIlong and BIClong cross the shoulder: MyoSim's hand-preview pose (90 deg
-elevation) stretches TRIlong to 1.2-1.4 optimal lengths, i.e. a 7-9 Nm passive elbow-extension torque that the
-elbow flexors would have to fight permanently (tonic BRA/BRD EMG at rest). SHOULDER_POSE was chosen by a grid
-search minimising total passive muscle force over elbow flexion 0.4-2.0 rad (~3x less than the preview pose).
-
-The elbow is kept so its angle can be varied per session (limb-position effect: elbow flexors are active,
-and visible to a proximal ring, whenever the forearm is held against gravity).
+Compared to MyoHand it keeps the elbow and the proximal forearm muscles a NinaPro-style armband sits over
+(ANC, SUP, BIC, BRA, BRD, TRI): 24 DoF, 48 muscles. The shoulder is welded arm-by-the-side (SHOULDER_POSE, chosen
+to minimise passive muscle force over the elbow range); MyoSim's preview pose would stretch TRIlong into a
+permanent 7-9 Nm passive elbow torque.
 """
 import logging
 import re
@@ -35,10 +22,10 @@ from myo_sim.build.hand import (
     tendon_wrap_geom_names,
 )
 
-from .config import PACKAGE
+from ..config import PACKAGE
 
 log = logging.getLogger(__name__)
-OUT_DIR = PACKAGE / "models"           # packaged with myogen
+OUT_DIR = PACKAGE / "models"
 OUT_XML = OUT_DIR / "myoforearm_r.xml"
 
 FOREARM_EXTRA_ACTUATORS = frozenset({"ANC", "SUP", "BIClong", "BICshort", "BRA", "BRD", "TRIlong", "TRIlat", "TRImed"})
@@ -78,7 +65,7 @@ def build_spec():
         actuator.target = tendon_name_map[actuator.target]
         actuator.name = add_side_suffix(actuator.name, side)
 
-    bake_pose(spec, SHOULDER_POSE)       # weld the shoulder in a seated, arm-by-the-side posture
+    bake_pose(spec, SHOULDER_POSE)
     for eq in list(spec.equalities):
         if eq.name1 in REMOVED_JOINTS or eq.name2 in REMOVED_JOINTS:
             spec.delete(eq)
@@ -93,7 +80,8 @@ def build_spec():
     return spec
 
 
-def main():
+def build():
+    """Write the model XML and its meshes into the package."""
     spec = build_spec()
     model = spec.compile()
     OUT_DIR.mkdir(exist_ok=True)

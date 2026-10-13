@@ -1,23 +1,15 @@
-"""Computed muscle control: drive the 39 MyoHand muscles so the hand follows an intent trajectory.
+"""Computed muscle control: muscle excitations that make the model follow a reference trajectory.
 
 Each control tick:
-  1. desired acceleration  = feed-forward + PD feedback on the reference
-  2. required joint torque = MuJoCo inverse dynamics at the current state (gravity, inertia, passive,
-                             minus any external load)
-  3. muscle activations    = bounded least squares   min ||W (R^T (g*a + b) - tau)||^2 + lam ||D (a - c)||^2
-                             (W = 1 / (diag(M) * acc_scale): torque error measured as acceleration error)
-                             with 0 <= a <= 1, where c is the co-contraction level (c = 0: minimum effort;
-                             c > 0: antagonists are pulled up together -> stiffer hand, same kinematics)
-     plus reserve torques r (OpenSim-style reserve actuators, heavily penalised) for what the muscles cannot
-     do. MyoHand's thumb lacks APB/FPB/AdP and cannot hold itself against gravity with muscles alone; those
-     muscles are intrinsic (invisible to forearm electrodes, absent in transradial amputees), so the reserves
-     stand in for them without producing EMG. Reserve usage is logged for QC.
-  4. neural excitation     = activation-dynamics inversion, so that act approaches a over `horizon` ticks
-     (a penalty on activation change between ticks keeps the drive smooth, as real EMG envelopes are)
+  1. desired acceleration = feed-forward + PD feedback on the reference
+  2. joint torque         = MuJoCo inverse dynamics (gravity, inertia, passive forces, minus external loads)
+  3. activations a        = bounded least squares
+                            min ||W (R^T (gain * a + bias) - tau)||^2 + lam ||a - cocontraction||^2 + smoothness
+                            plus heavily penalised reserve torques for what the muscles cannot do (the thumb
+                            lacks intrinsic muscles; reserves stand in for them without producing EMG)
+  4. excitation u         = inverse activation dynamics, so the activation reaches a over `horizon` ticks
 
-The excitation u(t) is what drives the EMG (it precedes force by the activation dynamics, i.e. the
-electromechanical delay), the activation a(t) is what produces force, and q(t) is the resulting
-physically consistent kinematics.
+u drives the EMG, a produces force, and q is the resulting physically consistent motion.
 """
 from dataclasses import dataclass
 
@@ -35,22 +27,22 @@ class TrackerConfig:
     zeta: float = 1.0
     lam: float = 3e-3            # effort / co-contraction regularisation weight
     smooth: float = 1.0          # penalty on activation change between ticks (smooth neural drive)
-    smooth_leak: float = 0.9     # smoothness pulls towards leak * a_prev: drive no longer needed decays with
-                                 # tau ~ dt / (1 - leak) = 100 ms instead of lingering (the effort term is weak)
+    smooth_leak: float = 0.9     # pull towards leak * a_prev: unneeded drive decays in ~100 ms
     horizon: int = 3             # ticks over which the activation dynamics are inverted (1 = most aggressive)
-    acc_scale: float = 200.0      # rad/s^2 of acceleration error that costs as much as lam
+    acc_scale: float = 200.0     # rad/s^2 of acceleration error that costs as much as lam
     reserve_cost: float = 1.0    # weight of reserve torques (in acc_scale units); >> muscle cost
-    # Joints whose actuating muscles the model lacks get cheap reserves: the thumb (no APB/FPB/AdP in either
-    # model) and, in MyoHand only, supination (no supinator/biceps; added automatically when SUP_r is absent).
-    # Everywhere else muscles must do the work.
+    # Joints whose muscles the model lacks get cheap reserves: the thumb (no APB/FPB/AdP) and, in MyoHand only,
+    # supination (added automatically when SUP_r is absent).
     weak_joints: tuple = ("cmc_flexion_r", "cmc_abduction_r", "mp_flexion_r", "ip_flexion_r")
     weak_reserve_cost: float = 0.1
-    weak_reserve_max: float = 3.0   # Nm: the missing supinator/biceps are strong
+    weak_reserve_max: float = 3.0   # Nm
     reserve_max: float = 0.5     # Nm per joint
-    muscle_cost: np.ndarray | None = None   # (nu,) per-muscle recruitment cost (subject "strategy")
+    muscle_cost: np.ndarray | None = None   # (nu,) per-muscle recruitment cost (subject strategy)
 
 
 class MuscleTracker:
+    """Muscle excitations tracking a reference, one control tick at a time (see the module docstring)."""
+
     def __init__(self, m, d, cfg: TrackerConfig):
         self.m, self.d, self.cfg = m, d, cfg
         self.R = np.zeros((m.nu, m.nv))
@@ -74,14 +66,13 @@ class MuscleTracker:
         self.a_prev = np.zeros(m.nu)
 
     def _torque_scale(self):
-        # Express torque errors as acceleration errors (divide by joint-space inertia), so light distal
-        # joints are tracked as tightly as the wrist instead of being dominated by the effort cost.
+        # Torque errors as acceleration errors, so light finger joints are tracked as tightly as the wrist.
         mujoco.mj_fullM(self.m, self.d, self.M)
         return np.diag(self.M) * self.cfg.acc_scale
 
     def solve_activation(self, tau, cocon, gain, bias):
         """Returns (muscle activations (nu,), reserve torques (nv,) in Nm). Needs self.R at the current state."""
-        m, d, nu, nv = self.m, self.d, self.m.nu, self.m.nv
+        nu, nv = self.m.nu, self.m.nv
         scale = self._torque_scale()
         A_tau = np.hstack([(self.R.T * gain) / scale[:, None], np.eye(nv)])
         y_tau = (tau - self.R.T @ bias) / scale
@@ -108,12 +99,11 @@ class MuscleTracker:
         return np.clip(act + (a_des - act) / k, 0.0, 1.0)
 
     def control(self, q_ref, qd_ref, qdd_ref, cocon, qfrc_load, support=None):
-        """Compute (excitation, desired activation, reserve torque) for the next tick and apply the
-        external load + support + reserve torque to qfrc_applied.
+        """(excitation, desired activation, reserve torque) for the next tick; applies load + support + reserve
+        torques to qfrc_applied.
 
-        qfrc_load: external joint torques (Nm), e.g. grip load.
-        support:   (nv,) fraction of the *static* joint torque (gravity, passive muscle forces, joint springs) carried by an
-                   external support such as an armrest; movements still have to be produced by the muscles.
+        qfrc_load: (nv,) external joint torques (Nm), e.g. grip load.
+        support:   (nv,) fraction of the static joint torque (gravity, passive forces) carried by an armrest.
         """
         m, d = self.m, self.d
         d.qacc[:] = qdd_ref + self.kp * (q_ref - d.qpos) + self.kd * (qd_ref - d.qvel)

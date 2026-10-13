@@ -1,22 +1,17 @@
 """Electrode layouts on BioMime's 10 x 32 monopolar grid.
 
-Electrodes are poles at (angle, z): angle is a fraction of the circumference in BioMime's convention
-(column = 32 * angle, periodic), z a fraction of forearm length from the elbow (mapped to rows by
-GridGeometry). A channel is a weighted sum of poles: bipolar = (+1, -1) pair along the fibres separated by the
-inter-electrode distance, monopolar = one pole. Any count / position works: rings, staggered rings, targeted
-electrodes, HD grids. Positions are interpolated bilinearly on the grid; anything outside the grid's axial span
-is clamped to the nearest row and reported.
+A channel is a weighted sum of poles at (angle, z): angle as a fraction of the circumference (column = 32 * angle),
+z as a fraction of forearm length (rows via GridGeometry). Bipolar = (+1, -1) along the fibres; positions are
+interpolated bilinearly, poles beyond the grid's rows are clamped and counted.
 
-Skin: BioMime's public checkpoint has no fat/skin condition, so subcutaneous fat thicker than the reference
-anatomy is modelled as an extra spatial low-pass (Gaussian over the surface, sigma ~ extra fat thickness) and
-an amplitude attenuation. Thinner fat sharpens nothing (clamped at the reference).
+BioMime has no fat condition: fat thicker than its reference forearm is an extra spatial low-pass + attenuation.
 """
 from dataclasses import dataclass
 
 import numpy as np
 
 from .anatomy import FAT_REF, GridGeometry
-from .model import N_COL, N_ROW
+from .generator import N_COL, N_ROW
 
 FAT_ATTEN_DECAY = 0.006   # m, same e-folding as BioMime's depth decay
 
@@ -34,17 +29,6 @@ def ring_channels(n, angle0, z_frac, ied_frac, stagger=0.0, jitter=None, prefix=
     for k in range(n):
         a = angle0 + stagger + k / n + jitter[k]
         chans.append(Channel([(a, z_frac - ied_frac / 2, 1.0), (a, z_frac + ied_frac / 2, -1.0)], f"{prefix}{k}"))
-    return chans
-
-
-def grid_channels(n_rows, n_cols, angle0, z0_frac, d_angle, d_z, monopolar=True):
-    """HD grid: monopolar (or row-wise single-differential) channels on a regular patch."""
-    chans = []
-    for i in range(n_rows):
-        for j in range(n_cols):
-            a, z = angle0 + j * d_angle, z0_frac + i * d_z
-            poles = [(a, z, 1.0)] if monopolar else [(a, z, 1.0), (a, z + d_z, -1.0)]
-            chans.append(Channel(poles, f"g{i}_{j}"))
     return chans
 
 
@@ -92,7 +76,7 @@ def subject_channels(layout, session, forearm_length, territory_angle=None, ied=
     """
     L = forearm_length
     ied_frac = ied / L
-    per_ring = (layout.n_channels - len(layout.targets)) // layout.rings
+    per_ring = layout.per_ring
     rng = rng or np.random.default_rng(0)
     angle0 = (layout.rotation + session.rotation_shift) / (2 * np.pi)
     chans = []
