@@ -5,3 +5,5 @@ data/
 !reports/**/*.png
 MUJOCO_LOG.TXT
 *.egg-info/
+
+reports/

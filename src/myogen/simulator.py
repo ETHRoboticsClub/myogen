@@ -109,7 +109,7 @@ class Simulator:
         rng = np.random.default_rng(np.random.SeedSequence([self.subject.seed, 2]))
         joint_speed = np.abs(run.labels["qd"][:, :3]).sum(1)
         emg = electrodes.record(run.clean.emg, run.clean.fs, joint_speed, FS_CTRL, rng)
-        qc = self.quality(emg, run.labels, run.activity.residual)
+        qc = self.quality(emg, run.labels, run.activity)
         if not qc["pass"]:
             log.warning(f"the simulated hand did not follow the motion well (tracking RMSE {qc['rmse_deg']:.1f} deg, "
                         f"saturation {qc['saturation']:.0%}): see recording.qc")
@@ -142,7 +142,7 @@ class Simulator:
             log.warning(f"angles beyond the model's joint limits (clipped): {', '.join(beyond)}")
         return np.clip(hand, lo, hi)
 
-    def quality(self, emg, labels, residual):
+    def quality(self, emg, labels, activity):
         m = self.model.m
         err = np.degrees(labels["q"] - labels["q_ref"])
         wrist = [m.jnt_dofadr[m.joint(n).id] for n in ("deviation_r", "flexion_r")]
@@ -153,10 +153,11 @@ class Simulator:
             "wrist_reserve_rms_nm": float(np.sqrt((labels["reserve"][:, wrist] ** 2).mean())),
             "reserve_rms_nm": float(np.sqrt((labels["reserve"] ** 2).mean())),
             "saturation": float((labels["excitation"] > 0.99).mean()),
-            "residual": float(residual.mean()),
+            "residual": float(activity.residual.mean()),
+            "recovered_ticks": [] if activity.recovered is None else np.flatnonzero(activity.recovered).tolist(),
             "finite": bool(np.isfinite(emg).all() and np.isfinite(labels["q"]).all()),
         }
-        qc["pass"] = bool(qc["finite"] and qc["rmse_deg"] < QC_MAX_RMSE_DEG
+        qc["pass"] = bool(qc["finite"] and not qc["recovered_ticks"] and qc["rmse_deg"] < QC_MAX_RMSE_DEG
                           and qc["wrist_reserve_rms_nm"] < QC_MAX_WRIST_RESERVE_NM
                           and qc["saturation"] < QC_MAX_SATURATION)
         return qc

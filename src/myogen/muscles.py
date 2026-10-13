@@ -13,12 +13,15 @@ The model is then stepped forward with u: q in the output is the physically cons
 This is the mechanical minimum. People drive their muscles harder (stiffening, co-contraction): that effort is
 added to the neural drive as torque-neutral co-activation, so it reaches the EMG without changing the motion.
 """
+import logging
 from dataclasses import dataclass, fields
 
 import mujoco
 import numpy as np
 from scipy import signal
 from scipy.optimize import lsq_linear
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -35,10 +38,12 @@ class MuscleActivity:
     qd: np.ndarray            # (T, nv) joint velocities after each tick
     reserve: np.ndarray       # (T, nv) reserve torques (Nm)
     residual: np.ndarray      # (T,) torque residual of the muscle solution
+    recovered: np.ndarray = None   # (T,) bool: the simulation diverged and was reset to the reference here
 
     def __getitem__(self, s):
         """The ticks in slice s (all arrays sliced along time)."""
-        return MuscleActivity(self.fs, *(getattr(self, f.name)[s] for f in fields(self)[1:]))
+        return MuscleActivity(self.fs, *(None if getattr(self, f.name) is None else getattr(self, f.name)[s]
+                                         for f in fields(self)[1:]))
 
 
 class MuscleController:
@@ -52,6 +57,7 @@ class MuscleController:
     reserve_cost, reserve_max = 1.0, 0.5               # reserve torques: weight, Nm per joint
     weak_joints = ("cmc_flexion_r", "cmc_abduction_r", "mp_flexion_r", "ip_flexion_r")   # thumb: no intrinsics
     weak_reserve_cost, weak_reserve_max = 0.1, 3.0
+    max_speed = 200.0                # rad/s: beyond this the simulation has diverged (reset to the reference)
 
     def __init__(self, model, muscle_cost=None, fs=100.0):
         """model: a ForearmModel; muscle_cost: (nu,) relative recruitment cost (None = equal)."""
@@ -84,10 +90,22 @@ class MuscleController:
         self.a_prev = np.zeros(m.nu)
         out = {k: np.zeros((T, n)) for k, n in [("excitation", m.nu), ("activation", m.nu), ("fibre_length", m.nu),
                                                 ("qpos", m.nq), ("q", m.nq), ("qd", m.nv), ("reserve", m.nv)]}
-        out["residual"] = np.zeros(T)
+        out["residual"], out["recovered"] = np.zeros(T), np.zeros(T, bool)
+        act_ok = np.zeros(m.nu)
         for k in range(T):
+            if self._diverged():
+                out["recovered"][k] = True
+                self._recover(q_ref[k], act_ok, k)
+            act_ok = d.act.copy()
+            try:
+                u, reserve, out["residual"][k] = self._control(q_ref[k], qd_ref[k], qdd_ref[k], load_torque[k],
+                                                               support)
+            except np.linalg.LinAlgError:
+                out["recovered"][k] = True
+                self._recover(q_ref[k], act_ok, k)
+                u, reserve, out["residual"][k] = self._control(q_ref[k], qd_ref[k], qdd_ref[k], load_torque[k],
+                                                               support)
             out["qpos"][k] = d.qpos
-            u, reserve, out["residual"][k] = self._control(q_ref[k], qd_ref[k], qdd_ref[k], load_torque[k], support)
             d.ctrl[:] = u
             for _ in range(self.steps_per_tick):
                 mujoco.mj_step(m, d)
@@ -103,6 +121,19 @@ class MuscleController:
         out["effort"] = np.zeros((T, m.nu)) if effort is None else np.asarray(effort, float)
         out["drive"] = np.clip(np.clip(smooth, 0, 1) + out["effort"], 0, 1)
         return MuscleActivity(fs=self.fs, **out)
+
+    def _diverged(self):
+        d = self.d
+        return not (np.isfinite(d.qpos).all() and np.isfinite(d.act).all() and np.isfinite(d.qvel).all()
+                    and np.abs(d.qvel).max() < self.max_speed)
+
+    def _recover(self, q, act, k):
+        """Restart from the reference pose at rest, keeping the last sane activations."""
+        log.warning(f"simulation diverged at tick {k} ({k / self.fs:.2f} s): reset to the reference pose")
+        self.model.set_pose(q)
+        self.d.act[:] = act
+        mujoco.mj_forward(self.m, self.d)
+        self.a_prev = np.zeros(self.m.nu)
 
     def _control(self, q_ref, qd_ref, qdd_ref, load, support):
         """(excitation, reserve torque, residual) for the next tick; applies load + support + reserve torques."""
