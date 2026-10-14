@@ -115,6 +115,8 @@ class EMGModel:
                                  fs=self.fs, output="sos")
         filter_state = np.zeros((bandpass.shape[0], 2, n_src))
         tick_index = np.arange(n_ticks)
+        # The geometry changes with posture, far slower than the control rate: computed every geometry_step ticks.
+        geometry_step = max(1, int(round(fs_ctrl / self.params.geometry_hz)))
         pole_emg = np.empty((n_ticks * upsample, n_poles), np.float32)
         # Chunked so the (samples x sources) noise array stays small.
         for t0 in range(0, n_ticks, chunk_ticks):
@@ -125,9 +127,27 @@ class EMGModel:
             noise, filter_state = signal.sosfilt(bandpass, rng.standard_normal((n, n_src)), axis=0, zi=filter_state)
             src = (noise.reshape(n, n_muscles, K) * amp[:, :, None]).reshape(t1 - t0, upsample, n_src)
             src = src.astype(np.float32)
-            gain = np.stack([self.gains(q) for q in qpos[t0:t1]])                          # (ticks, n_src, 2C)
+            gain = self._chunk_gains(qpos, t0, t1, geometry_step)                          # (ticks, n_src, 2C)
             pole_emg[t0 * upsample:t1 * upsample] = np.einsum("tus,tsp->tup", src, gain).reshape(n, n_poles)
         return pole_emg
+
+    def _chunk_gains(self, qpos: np.ndarray, t0: int, t1: int, step: int) -> np.ndarray:
+        """(t1 - t0, n_src, 2C) gains at ticks t0..t1, computed every `step` ticks (on a grid shared by all
+        chunks) and linearly interpolated in between."""
+        if step == 1:
+            return np.stack([self.gains(q) for q in qpos[t0:t1]])
+        last = len(qpos) - 1
+        knots = np.arange((t0 // step) * step, min(-(-t1 // step) * step, last) + 1, step)
+        if knots[-1] < min(t1 - 1, last):
+            knots = np.append(knots, last)
+        g = np.stack([self.gains(qpos[k]) for k in knots])
+        ticks = np.arange(t0, t1)
+        i = np.clip(np.searchsorted(knots, ticks, side="right") - 1, 0, len(knots) - 2) if len(knots) > 1 else \
+            np.zeros(len(ticks), int)
+        if len(knots) == 1:
+            return np.repeat(g, len(ticks), 0)
+        w = ((ticks - knots[i]) / (knots[i + 1] - knots[i])).astype(np.float32)[:, None, None]
+        return (1 - w) * g[i] + w * g[i + 1]
 
     def _bipolar(self, pole_emg: np.ndarray) -> np.ndarray:
         """(N, C) pole 1 minus pole 2 delayed by the conduction time between them."""

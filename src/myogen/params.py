@@ -72,6 +72,7 @@ class EMGParams:
     decay_mm: float = 12.0                # distance over which a source's gain at a pole falls by 1/e
     conduction_velocity: float = 4.0      # m/s along the fibres (sets the delay between the two poles)
     fs: float = 2000.0                    # Hz, output sampling rate
+    geometry_hz: float = 25.0             # Hz, rate of the posture-dependent source-electrode geometry (interpolated)
     filter_order: int = 2                 # band-pass of the source noise (band: Subject.spectrum_hz)
     superficial_depth_m: float = 0.004    # muscle depth below the fat used to normalise amplitudes
     elbow_margin_m: float = 0.02          # sources up to this far proximal of the elbow still count
