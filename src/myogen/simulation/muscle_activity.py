@@ -72,12 +72,14 @@ class MuscleController:
         self.M = np.zeros((m.nv, m.nv))
 
     def track(self, q_ref: np.ndarray, load_torque: np.ndarray, support: np.ndarray, fibre_rest: np.ndarray,
-              effort: np.ndarray | None = None, on_tick: Callable[[int, int], None] | None = None) -> MuscleActivity:
+              effort: np.ndarray | None = None, on_tick: Callable[[int, int], None] | None = None,
+              drive_gain: np.ndarray | None = None) -> MuscleActivity:
         """Drive the model along q_ref (T, nq), starting at q_ref[0].
 
         load_torque: (T, nv) external torques (Nm); support: (nv,) fraction of the static torque carried by an
         armrest; fibre_rest: (nu,) fibre lengths at the relaxed posture; effort: (T, nu) co-activation added to the
-        neural drive (not to the mechanics). on_tick(k, T) is called after every tick.
+        neural drive (not to the mechanics); drive_gain: (T,) share of the excitation reaching the drive (None: 1).
+        on_tick(k, T) is called after every tick.
         """
         m, d, T = self.m, self.d, len(q_ref)
         qd_ref = np.gradient(q_ref, 1 / self.fs, axis=0)
@@ -114,7 +116,7 @@ class MuscleController:
                 on_tick(k, T)
         out["fibre_length"] /= fibre_rest
         out["effort"] = np.zeros((T, m.nu)) if effort is None else np.asarray(effort, float)
-        out["drive"] = self._neural_drive(out["excitation"], out["effort"])
+        out["drive"] = self._neural_drive(out["excitation"], out["effort"], drive_gain)
         return MuscleActivity(fs=self.fs, **out)
 
     def _control(self, q_ref: np.ndarray, qd_ref: np.ndarray, qdd_ref: np.ndarray, load: np.ndarray,
@@ -182,12 +184,15 @@ class MuscleController:
         k = 1 - np.exp(-self.p.horizon_ticks * self.dt / tau)
         return np.clip(act + (a_des - act) / k, 0.0, 1.0)
 
-    def _neural_drive(self, excitation: np.ndarray, effort: np.ndarray) -> np.ndarray:
+    def _neural_drive(self, excitation: np.ndarray, effort: np.ndarray, gain: np.ndarray | None = None
+                      ) -> np.ndarray:
         """(T, nu) drive the EMG follows: smoothed excitation (the controller's fast corrections are a simulation
-        artifact; neural drive is < ~5 Hz) plus the effort."""
+        artifact; neural drive is < ~5 Hz), times gain (T,), plus the effort."""
         drive_lp = signal.butter(2, self.p.drive_lowpass_hz, fs=self.fs, output="sos")
-        smooth = signal.sosfiltfilt(drive_lp, excitation, axis=0) if len(excitation) > 15 else excitation
-        return np.clip(np.clip(smooth, 0, 1) + effort, 0, 1)
+        smooth = np.clip(signal.sosfiltfilt(drive_lp, excitation, axis=0) if len(excitation) > 15 else excitation, 0, 1)
+        if gain is not None:
+            smooth = smooth * gain[:, None]
+        return np.clip(smooth + effort, 0, 1)
 
     def _diverged(self) -> bool:
         d = self.d
@@ -231,11 +236,39 @@ def effort(model: ForearmModel, q_ref: np.ndarray, q_rest: np.ndarray, subject: 
     r = subject.antagonist_ratio
     co_activation = (level[:, None] * per_muscle(engaged, involvement, r)
                      + subject.move_cocontraction * per_muscle(moving, involvement, r))
-    if rest is not None and p.rest_effort < 1:
-        lp = signal.butter(2, p.speed_lowpass_hz, fs=fs, output="sos")
-        relaxed = np.clip(signal.sosfiltfilt(lp, np.asarray(rest, float)), 0, 1)
-        co_activation *= (1 - (1 - p.rest_effort) * relaxed)[:, None]
-    return co_activation, grip_load(model, q_ref, subject, rng, p, fs)
+    lead = int(round(p.lead_s * fs))
+    if lead > 0:                     # the drive precedes the movement it causes (electromechanical delay)
+        co_activation = np.vstack([co_activation[lead:], np.repeat(co_activation[-1:], lead, 0)])
+    if rest is not None:
+        co_activation *= (1 - (1 - p.rest_effort) * relaxation(rest, p, fs))[:, None]
+    grip = grip_load(model, q_ref, subject, rng, p, fs)
+    if p.muscle_variability > 0:     # each muscle's drive also fluctuates on its own (drawn after the grip load)
+        co_activation *= muscle_fluctuations(rng, co_activation.shape, fs, p.muscle_variability,
+                                             p.muscle_variability_hz)
+    return co_activation, grip
+
+
+def muscle_fluctuations(rng: np.random.Generator, shape: tuple[int, int], fs: float, sigma: float, cutoff_hz: float
+                        ) -> np.ndarray:
+    """(T, nu) independent slow multiplicative fluctuations, lognormal with log-sd sigma and mean 1."""
+    lp = signal.butter(2, cutoff_hz, fs=fs, output="sos")
+    z = signal.sosfiltfilt(lp, rng.standard_normal(shape), axis=0)
+    z /= z.std(0, keepdims=True) + 1e-12
+    return np.exp(sigma * z - sigma ** 2 / 2)
+
+
+def relaxation(rest: np.ndarray, p: EffortParams, fs: float) -> np.ndarray:
+    """(T,) in [0, 1]: how relaxed the hand is, from the motion's rest labels (smoothed like the engagement)."""
+    lp = signal.butter(2, p.speed_lowpass_hz, fs=fs, output="sos")
+    return np.clip(signal.sosfiltfilt(lp, np.asarray(rest, float)), 0, 1)
+
+
+def drive_gain(rest: np.ndarray | None, p: EffortParams, fs: float) -> np.ndarray | None:
+    """(T,) share of the controller's excitation that reaches the neural drive: EffortParams.rest_excitation where
+    the motion is labelled rest (a resting hand is held by its support, not by its muscles), 1 elsewhere."""
+    if rest is None or p.rest_excitation >= 1:
+        return None
+    return 1 - (1 - p.rest_excitation) * relaxation(rest, p, fs)
 
 
 def joint_weights(model: ForearmModel, joint_effort: dict[str, float]) -> np.ndarray:

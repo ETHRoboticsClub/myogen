@@ -58,6 +58,10 @@ class EffortParams:
     return_effort: float = 1.0            # effort of moving back towards the relaxed posture, relative to moving away
     finger_coupling: float = 0.0          # share of a finger's engagement reaching its neighbour (^2 the next one)
     rest_effort: float = 1.0              # effort left where the motion is labelled rest (HandMotion.rest)
+    rest_excitation: float = 1.0          # share of the controller's excitation in the EMG drive at labelled rest
+    lead_s: float = 0.0                   # s, the effort precedes the movement (electromechanical delay)
+    muscle_variability: float = 0.0       # log-sd of each muscle's own slow effort fluctuations (0: none)
+    muscle_variability_hz: float = 0.5    # their bandwidth
     # Effort per unit of engagement, by joint name prefix (others: 1): holding the wrist away from rest takes more
     # effort than the same fraction of a finger's range.
     joint_effort: dict[str, float] = field(default_factory=dict)
@@ -77,6 +81,8 @@ class EMGParams:
     n_sources: int = 6                    # point sources per muscle belly
     decay_mm: float = 12.0                # distance over which a source's gain at a pole falls by 1/e
     conduction_velocity: float = 4.0      # m/s along the fibres (sets the delay between the two poles)
+    near_field_mm: float = float("inf")   # distance over which a source's signal stops travelling under both poles
+                                          # (beyond it, it is common to them: bipolar rejection); inf: never
     fs: float = 2000.0                    # Hz, output sampling rate
     geometry_hz: float = 25.0             # Hz, rate of the posture-dependent source-electrode geometry (interpolated)
     filter_order: int = 2                 # band-pass of the source noise (band: Subject.spectrum_hz)
