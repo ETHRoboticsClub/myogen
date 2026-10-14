@@ -91,3 +91,32 @@ def test_effort_is_directional():
         co, _ = effort(model, q, q_rest, subject, np.random.default_rng(0), EffortParams(), 100.0)
         held = co[T // 2]
         assert held[agonists].min() > 2 * held[antagonists].max() > 0
+
+
+def test_effort_relaxes_at_rest_and_when_letting_go():
+    """No co-activation where the motion is labelled rest; moving back towards the relaxed posture is letting go."""
+    from myogen.params import EffortParams
+    from myogen.simulation.muscle_activity import effort
+    model = ForearmModel()
+    T, wrist = 400, model.m.jnt_qposadr[model.m.joint("flexion_r").id]
+    q_rest = model.default_qpos.copy()
+    q = np.tile(q_rest, (T, 1))
+    q[:, wrist] = 0.6 * np.sin(np.pi * np.arange(T) / T)          # out to 0.6 rad and back
+    rest = np.zeros(T, bool)
+    rest[-50:] = True
+    p = EffortParams(cocontraction_episode_prob=0.0, lead_s=0.0)
+    co, _ = effort(model, q, q_rest, mg.Subject(), np.random.default_rng(0), p, 100.0, rest=rest)
+    assert co[-10:].max() < 1e-3 < co[T // 2].max()
+    out, back = co[T // 4].max(), co[3 * T // 4].max()            # same posture, moving out vs moving back
+    assert back < out
+
+
+def test_near_field_rejects_distant_sources():
+    """With a finite near field, a distant muscle reaches a channel less than with the purely propagating model."""
+    from myogen.params import EMGParams
+    model = ForearmModel()
+    far = [mg.Simulator("myo", params=mg.SimParams().replace(emg={"near_field_mm": v})).emg for v in (np.inf, 5.0)]
+    w = [e.pole_weights(model.default_qpos).reshape(model.nu, -1, 16, 3) for e in far]
+    assert np.allclose(w[0][..., 2], 0)                             # infinite near field: nothing in phase
+    assert EMGParams().near_field_mm == np.inf
+    assert w[1][..., 2].sum() > 0 and np.allclose(w[1][..., 1] + w[1][..., 2], w[0][..., 1])
