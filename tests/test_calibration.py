@@ -5,8 +5,8 @@ import numpy as np
 import pytest
 
 import myogen as mg
-from myogen.body import HAND_JOINTS
-from myogen.motion import REST_POSTURE
+from myogen.inputs.motion import REST_POSTURE
+from myogen.simulation.musculoskeletal import HAND_JOINTS
 
 
 def motion_with_rest(rest_s=2.0, move_s=4.0, fs=100.0):
@@ -37,7 +37,7 @@ def test_recovers_known_device_settings(device, truth):
 
 
 def test_recovers_armband_rotation():
-    from myogen.calibration import rotated
+    from myogen.tools.calibration import rotated
     sim = mg.Simulator("myo")
     motion = motion_with_rest()
     truth = sim.with_electrodes(rotated(sim.electrodes, 90.0))

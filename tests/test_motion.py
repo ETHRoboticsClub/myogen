@@ -3,8 +3,8 @@ import numpy as np
 import pytest
 
 import myogen as mg
-from myogen.body import HAND_JOINTS
-from myogen.motion import DIP_PER_PIP, REST_POSTURE
+from myogen.inputs.motion import DIP_PER_PIP, REST_POSTURE
+from myogen.simulation.musculoskeletal import HAND_JOINTS
 
 
 def test_model_names_pass_through_and_missing_joints_are_filled():

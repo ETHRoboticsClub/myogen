@@ -1,9 +1,18 @@
+# environments and caches
 .venv/
 __pycache__/
-data/
-*.png
-!reports/**/*.png
-MUJOCO_LOG.TXT
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# packaging
+build/
+dist/
 *.egg-info/
 
+# local outputs
+data/
 reports/
+*.h5
+MUJOCO_LOG.TXT
