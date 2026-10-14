@@ -1,15 +1,17 @@
-"""ForearmModel: the MuJoCo forearm (24 joints, 48 muscles), its anatomy by name, and the loads besides the muscles.
+from __future__ import annotations
 
-The forearm frame used everywhere (electrodes, EMG sources, viewer): origin at the elbow, z along the forearm
-towards the wrist, attached to the ulna (it does not rotate in pronation). Angles around the forearm:
-0 = radial border, +90 deg dorsal (extensors), -90 deg palmar (flexors), +-180 deg ulnar border.
-"""
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import mujoco
 import numpy as np
 
-MODEL_XML = Path(__file__).resolve().parent / "models" / "myoforearm_r.xml"
+from ..params import MusculoskeletalParams
+
+if TYPE_CHECKING:
+    from ..inputs.subject import Subject
+
+MODEL_XML = Path(__file__).resolve().parent.parent / "models" / "myoforearm_r.xml"
 
 # Hand and wrist joints, in the order HandMotion stores them.
 HAND_JOINTS = [
@@ -23,19 +25,15 @@ HAND_JOINTS = [
 ELBOW_JOINT = "elbow_flexion_r"
 # Intrinsic hand muscles: absent after a transradial amputation and invisible to forearm electrodes.
 INTRINSIC_PREFIXES = ("OP_", "RI", "LU_RB", "UI_UB")
-
-# Passive joint stiffness (Nm/rad) around the relaxed posture: capsules, ligaments, resting muscle tone.
-PASSIVE_STIFFNESS = {"pro_sup_r": 0.1, "deviation_r": 0.25, "flexion_r": 0.2, "cmc_flexion_r": 0.03,
-                     "cmc_abduction_r": 0.03, "mp_flexion_r": 0.02, "ip_flexion_r": 0.01, "mcp": 0.04,
-                     "mcp_abd": 0.02, "pm": 0.02, "md": 0.01}
-# Torque opposing finger flexion at full grip load (Nm, ~5-10 N fingertip force).
-GRIP_TORQUE = {"mcp": 0.35, "pm": 0.18, "md": 0.08}
+R_MODEL_REF = 0.032          # m, outermost muscle line-of-action radius in the model's proximal forearm
+GRAVITY = 9.81               # m/s^2
 
 
 class ForearmModel:
     """The musculoskeletal model. `m`, `d` are the MuJoCo model and data; the rest is anatomy looked up by name."""
 
-    def __init__(self, xml=MODEL_XML):
+    def __init__(self, xml: str | Path = MODEL_XML, params: MusculoskeletalParams | None = None) -> None:
+        self.params = params or MusculoskeletalParams()
         self.m = m = mujoco.MjModel.from_xml_path(str(xml))
         self.d = mujoco.MjData(m)
         mujoco.mj_forward(m, self.d)
@@ -58,37 +56,32 @@ class ForearmModel:
         self.forearm_length = float(np.linalg.norm(wrist - elbow))       # m
 
     @property
-    def nu(self):
+    def nu(self) -> int:
         return self.m.nu
-
-    def default_data(self):
-        """A fresh MjData at the model's default pose (where the BioMime territories are fitted)."""
-        d = mujoco.MjData(self.m)
-        mujoco.mj_forward(self.m, d)
-        return d
 
     # -- poses -------------------------------------------------------------------------------------------------
 
-    def full_q(self, hand, elbow):
+    def full_q(self, hand: np.ndarray, elbow: np.ndarray | float) -> np.ndarray:
         """(T, nq) joint vectors from (T, 23) hand angles and (T,) elbow angles."""
         q = np.zeros(hand.shape[:-1] + (self.m.nq,))
         q[..., self.hand_qpos] = hand
         q[..., self.elbow_qpos] = elbow
         return q
 
-    def set_pose(self, qpos):
+    def set_pose(self, qpos: np.ndarray) -> None:
         mujoco.mj_resetData(self.m, self.d)
         self.d.qpos[:] = qpos
         mujoco.mj_forward(self.m, self.d)
 
     # -- geometry in the forearm frame -------------------------------------------------------------------------
 
-    def _axis_points(self, d):
+    def _axis_points(self, d: mujoco.MjData) -> tuple[np.ndarray, np.ndarray]:
         """Elbow (ulna origin) and wrist (lunate) centres in world coordinates."""
         return d.xpos[self.m.body("ulna_r").id].copy(), d.xpos[self.m.body("lunate_r").id].copy()
 
-    def forearm_frame(self, d=None):
-        """(origin, axes) of the forearm frame (see the module docstring); rows of `axes` are x, y, z."""
+    def forearm_frame(self, d: mujoco.MjData | None = None) -> tuple[np.ndarray, np.ndarray]:
+        """(origin, axes) of the forearm frame: origin at the elbow, z towards the wrist, x towards the radial border,
+        attached to the ulna (it does not rotate in pronation). Rows of `axes` are x, y, z."""
         d = self.d if d is None else d
         elbow, wrist = self._axis_points(d)
         z = wrist - elbow
@@ -98,7 +91,7 @@ class ForearmModel:
         x /= np.linalg.norm(x)
         return elbow, np.stack([x, np.cross(z, x), z])
 
-    def belly_points(self, n_per_muscle, d=None):
+    def belly_points(self, n_per_muscle: int, d: mujoco.MjData | None = None) -> np.ndarray:
         """(nu, n, 3) points along each muscle belly in the forearm frame: the proximal part of the tendon path
         whose arc length is the fibre length."""
         d = self.d if d is None else d
@@ -112,7 +105,7 @@ class ForearmModel:
             out[i] = np.stack([np.interp(u * fibre, s, p[:, k]) for k in range(3)], axis=1)
         return out
 
-    def moment_arms(self, qpos):
+    def moment_arms(self, qpos: np.ndarray) -> np.ndarray:
         """(nu, nv) muscle moment arms (m) at joint state qpos."""
         self.set_pose(qpos)
         R = np.zeros((self.m.nu, self.m.nv))
@@ -120,13 +113,13 @@ class ForearmModel:
                                 self.d.moment_colind)
         return R
 
-    def fibre_lengths(self, d=None):
+    def fibre_lengths(self, d: mujoco.MjData | None = None) -> np.ndarray:
         """Current fibre lengths (m): path length minus tendon slack (rigid tendon)."""
         return (self.d if d is None else d).actuator_length - self.tendon_slack
 
     # -- loads besides the muscles -----------------------------------------------------------------------------
 
-    def prepare(self, subject, q_start, q_rest):
+    def prepare(self, subject: Subject, q_start: np.ndarray, q_rest: np.ndarray) -> np.ndarray:
         """Set gravity and the passive joint springs for a run. Returns the fibre lengths at the relaxed posture."""
         self.set_pose(q_start)
         gravity = np.asarray(subject.gravity, float)
@@ -137,47 +130,51 @@ class ForearmModel:
             axis /= np.linalg.norm(axis)
             gravity -= (gravity @ axis) * axis
             gravity /= np.linalg.norm(gravity)
-        self.m.opt.gravity[:] = 9.81 * gravity
+        self.m.opt.gravity[:] = GRAVITY * gravity
         self._set_passive_springs(q_rest, subject.passive_stiffness)
         return np.maximum(self.fibre_lengths(), 1e-3)
 
-    def _set_passive_springs(self, q_rest, scale):
+    def _set_passive_springs(self, q_rest: np.ndarray, scale: float) -> None:
         """Joint springs whose equilibrium is q_rest: a relaxed hand rests there without muscle drive (each spring's
         reference is offset to balance gravity and passive muscle forces at q_rest). Leaves d at q_rest."""
         m, d = self.m, self.d
         k_all = np.zeros(m.njnt)
         for name in self.joint_names:
-            k_all[m.joint(name).id] = _joint_stiffness(name) * scale
+            k_all[m.joint(name).id] = _joint_stiffness(name, self.params.passive_stiffness) * scale
         m.jnt_stiffness[:] = k_all
         m.qpos_spring[:] = q_rest
         self.set_pose(q_rest)
         static = d.qfrc_bias - d.qfrc_actuator           # torque the springs must supply (actuator = passive muscle)
         for jid in np.flatnonzero(k_all):
             a, v = m.jnt_qposadr[jid], m.jnt_dofadr[jid]
-            m.qpos_spring[a] = q_rest[a] + np.clip(static[v] / k_all[jid], -0.6, 0.6)
+            m.qpos_spring[a] = q_rest[a] + np.clip(static[v] / k_all[jid], -self.params.spring_offset_max,
+                                                    self.params.spring_offset_max)
 
-    def support(self, subject):
+    def support(self, subject: Subject) -> np.ndarray:
         """(nv,) fraction of each joint's static torque carried by the armrest (or a resting hand)."""
-        arm, wrist = (0.925, 0.6) if subject.armrest else (0.15, 0.0)
+        p = self.params
+        arm, wrist = p.armrest_support if subject.armrest else p.held_support
         support = np.zeros(self.m.nv)
-        for name, frac in [(ELBOW_JOINT, arm), ("pro_sup_r", 0.7 * arm), ("deviation_r", wrist), ("flexion_r", wrist)]:
+        for name, frac in [(ELBOW_JOINT, arm), ("pro_sup_r", p.pronation_support * arm), ("deviation_r", wrist),
+                           ("flexion_r", wrist)]:
             support[self.m.jnt_dofadr[self.m.joint(name).id]] = frac
         return support
 
-    def grip_torque(self, grip, closure):
+    def grip_torque(self, grip: np.ndarray, closure: np.ndarray) -> np.ndarray:
         """(T, nv) torques opposing finger flexion when squeezing an object. grip: (T,) load level in [0, 1];
         closure: (T, 4) closure of fingers 2-5 in [0, 1] (only a closing finger meets the object)."""
         tau = np.zeros((len(grip), self.m.nv))
         for k, finger in enumerate("2345"):
-            for joint, torque in GRIP_TORQUE.items():
+            for joint, torque in self.params.grip_torque.items():
                 dof = self.m.jnt_dofadr[self.m.joint(f"{joint}{finger}_flexion_r").id]
-                tau[:, dof] = -torque * grip * np.clip(closure[:, k] / 0.6, 0, 1)
+                tau[:, dof] = -torque * grip * np.clip(closure[:, k] / self.params.grip_contact_closure, 0, 1)
         return tau
 
 
-def _joint_stiffness(name):
+def _joint_stiffness(name: str, stiffness: dict[str, float]) -> float:
+    """A joint's passive stiffness (Nm/rad); finger joints by prefix (MusculoskeletalParams.passive_stiffness)."""
     if name.startswith("mcp"):
-        return PASSIVE_STIFFNESS["mcp_abd" if "abduction" in name else "mcp"]
+        return stiffness["mcp_abd" if "abduction" in name else "mcp"]
     if name[:2] in ("pm", "md"):
-        return PASSIVE_STIFFNESS[name[:2]]
-    return PASSIVE_STIFFNESS.get(name, 0.0)
+        return stiffness[name[:2]]
+    return stiffness.get(name, 0.0)

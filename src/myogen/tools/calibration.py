@@ -1,25 +1,20 @@
-"""Matching a real recording device: compare() measures real and simulated EMG with the same statistics, and
-calibrate() fits the device settings of an Electrodes profile to recordings of that device.
+from __future__ import annotations
 
-    cal = mg.calibrate(simulator, motions, real_emgs, rests)     # motions: what the hand did in each recording
-    cal.electrodes.save("my_myo.yml")                            # the device profile: --electrodes my_myo.yml
-    print(cal)                                                   # real vs simulated, before / after
-
-Only what a recording identifies about the device is fitted, each against one statistic:
-    rotation    (fit_rotation=True) how the armband sits: the rotation of the ring electrodes whose per-channel
-                envelopes correlate best with the real ones (the muscle activity is simulated once)
-    gain        amplitude while moving (95th percentile of the envelope)
-    noise_uv    the floor at rest (median envelope at rest; it also absorbs residual activity at rest)
-    smooth_hz   otto_bock only: envelope autocorrelation at 50 ms
-Behaviour (effort) is not fitted. Calibrate on some subjects and report on others: calibrating and evaluating on
-the same recordings is circular.
-"""
 import copy
 import logging
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from scipy import signal
+
+if TYPE_CHECKING:
+    from ..inputs.electrodes import Electrodes
+    from ..inputs.motion import HandMotion
+    from ..simulator import CleanRun, Simulator
+
+Stats = dict[str, Any]       # statistic -> value (None where a recording has none)
 
 ENV_FS = 100.0               # Hz, envelope rate of every statistic
 RMS_WINDOW = 0.15            # s, moving RMS for devices that output raw EMG
@@ -27,7 +22,7 @@ RMS_WINDOW = 0.15            # s, moving RMS for devices that output raw EMG
 log = logging.getLogger(__name__)
 
 
-def envelope(emg, fs, device):
+def envelope(emg: np.ndarray, fs: float, device: str) -> np.ndarray:
     """(T, C) amplitude envelope at ENV_FS: the Otto Bock output as is, otherwise a moving RMS."""
     if device == "otto_bock":
         return np.asarray(emg, float)
@@ -37,7 +32,7 @@ def envelope(emg, fs, device):
     return env[::max(1, int(round(fs / ENV_FS)))]
 
 
-def statistics(emg, fs, device, rest=None):
+def statistics(emg: np.ndarray, fs: float, device: str, rest: np.ndarray | None = None) -> Stats:
     """Device-level statistics of one recording. rest: (N,) bool at the EMG rate (None: all movement)."""
     env = envelope(emg, fs, device)
     rest = np.zeros(len(env), bool) if rest is None else _resize(rest, len(env))
@@ -60,7 +55,8 @@ def statistics(emg, fs, device, rest=None):
     return stats
 
 
-def compare(real_emg, sim_emg, fs, device, rest=None):
+def compare(real_emg: np.ndarray, sim_emg: np.ndarray, fs: float, device: str, rest: np.ndarray | None = None
+            ) -> dict[str, tuple[float | None, float | None]]:
     """{statistic: (real, simulated)} for a real and a simulated recording of the same motion, plus
     channel_correlation: (None, mean correlation of each channel's real and simulated envelopes over time)."""
     real, sim = statistics(real_emg, fs, device, rest), statistics(sim_emg, fs, device, rest)
@@ -69,7 +65,7 @@ def compare(real_emg, sim_emg, fs, device, rest=None):
     return out
 
 
-def channel_correlation(real_emg, sim_emg, fs, device):
+def channel_correlation(real_emg: np.ndarray, sim_emg: np.ndarray, fs: float, device: str) -> float:
     """Mean over channels of the correlation between the real and the simulated envelope over time."""
     a, b = envelope(real_emg, fs, device), envelope(sim_emg, fs, device)
     n = min(len(a), len(b))
@@ -79,11 +75,11 @@ def channel_correlation(real_emg, sim_emg, fs, device):
 
 @dataclass
 class Calibration:
-    electrodes: object            # the fitted Electrodes (the device profile)
-    fitted: dict                  # parameter -> (before, after)
-    report: dict                  # statistic -> {"real", "before", "after"}
+    electrodes: Electrodes                              # the fitted device profile
+    fitted: dict[str, tuple[float, float]]              # parameter -> (before, after)
+    report: dict[str, dict[str, float | None]]          # statistic -> {"real", "before", "after"}
 
-    def __str__(self):
+    def __str__(self) -> str:
         lines = [f"{'statistic':24s}{'real':>10s}{'before':>10s}{'after':>10s}"]
         for k, v in self.report.items():
             lines.append(f"{k:24s}" + "".join(f"{_fmt(v[c]):>10s}" for c in ("real", "before", "after")))
@@ -91,7 +87,9 @@ class Calibration:
         return "\n".join(lines)
 
 
-def calibrate(simulator, motions, real_emgs, rests=None, rounds=3, fit_rotation=False, rotation_steps=16):
+def calibrate(simulator: Simulator, motions: Sequence[HandMotion], real_emgs: Sequence[np.ndarray],
+              rests: Sequence[np.ndarray | None] | None = None, rounds: int = 3, fit_rotation: bool = False,
+              rotation_steps: int = 16) -> Calibration:
     """Fit the device settings of simulator.electrodes to real recordings of the same motions.
 
     motions: HandMotions (what the hand did during each recording); real_emgs: (N, C) device outputs at the
@@ -111,13 +109,15 @@ def calibrate(simulator, motions, real_emgs, rests=None, rounds=3, fit_rotation=
             candidate = simulator.with_electrodes(rotated(simulator.electrodes, delta))
             scores[delta] = _match(candidate, [candidate.regenerate(run) for run in runs], real_emgs)
             log.info(f"rotation {delta:6.1f} deg: channel correlation {scores[delta]:.3f}")
-        rotation = max(scores, key=scores.get)
+        rotation = max(scores, key=lambda delta: scores[delta])
         simulator = simulator.with_electrodes(rotated(simulator.electrodes, rotation))
         runs = [simulator.regenerate(run) for run in runs]
 
-    def simulated(electrodes):
-        return _pooled([statistics(simulator.record(run, electrodes).emg, fs, device, r)
-                        for run, r in zip(runs, rests)])
+    def simulated(electrodes: Electrodes) -> Stats:
+        return _pooled([
+            statistics(simulator.record(run, electrodes).emg, fs, device, r)
+                    for run, r in zip(runs, rests)
+        ])
 
     start = rotated(simulator.electrodes, -rotation)
     fitted = copy.deepcopy(simulator.electrodes)
@@ -141,7 +141,7 @@ def calibrate(simulator, motions, real_emgs, rests=None, rounds=3, fit_rotation=
     return Calibration(fitted, fitted_params, report)
 
 
-def rotated(electrodes, delta_deg):
+def rotated(electrodes: Electrodes, delta_deg: float) -> Electrodes:
     """A copy with the ring electrodes (names ring*; all if there are none) rotated by delta_deg."""
     out = copy.deepcopy(electrodes)
     ring = [e for e in out.electrodes if e.name.startswith("ring")] or out.electrodes
@@ -150,25 +150,25 @@ def rotated(electrodes, delta_deg):
     return out
 
 
-def _match(simulator, runs, real_emgs):
+def _match(simulator: Simulator, runs: Sequence[CleanRun], real_emgs: Sequence[np.ndarray]) -> float:
     """Mean per-channel envelope correlation between the simulated runs and the real recordings."""
     fs, device = simulator.electrodes.fs_out, simulator.electrodes.device
     return float(np.mean([channel_correlation(x, simulator.record(run).emg, fs, device)
                           for run, x in zip(runs, real_emgs)]))
 
 
-def _with(electrodes, **values):
+def _with(electrodes: Electrodes, **values: float) -> Electrodes:
     e = copy.deepcopy(electrodes)
     for k, v in values.items():
         setattr(e.frontend if k == "smooth_hz" else e, k, v)
     return e
 
 
-def _get(electrodes, name):
+def _get(electrodes: Electrodes, name: str) -> float:
     return electrodes.frontend.smooth_hz if name == "smooth_hz" else getattr(electrodes, name)
 
 
-def _bisect(f, target, lo, hi, iterations=24):
+def _bisect(f: Callable[[float], float], target: float, lo: float, hi: float, iterations: int = 24) -> float:
     """x in [lo, hi] (log scale) with f(x) ~ target, for an increasing f."""
     lo, hi = np.log(lo), np.log(hi)
     for _ in range(iterations):
@@ -180,7 +180,7 @@ def _bisect(f, target, lo, hi, iterations=24):
     return float(np.exp(0.5 * (lo + hi)))
 
 
-def _pooled(stats):
+def _pooled(stats: Sequence[Stats]) -> Stats:
     """Mean of each statistic over recordings (None where a recording has none)."""
     out = {}
     for k in stats[0]:
@@ -189,11 +189,11 @@ def _pooled(stats):
     return out
 
 
-def _resize(mask, n):
+def _resize(mask: np.ndarray, n: int) -> np.ndarray:
     """A boolean mask resampled to n samples (nearest)."""
     mask = np.asarray(mask, bool)
     return mask[np.minimum((np.arange(n) * len(mask) / n).astype(int), len(mask) - 1)]
 
 
-def _fmt(v):
+def _fmt(v: float | None) -> str:
     return "-" if v is None else f"{v:.4g}"

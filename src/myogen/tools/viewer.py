@@ -1,19 +1,20 @@
-"""replay(): a Recording in the web viewer (mjviser, http://localhost:8080).
+from __future__ import annotations
 
-The hand moves as recorded; over it, in the forearm frame: the subject's skin, the electrode poles (coloured by
-channel or by EMG activity), the muscle bellies coloured by excitation, gravity and the armrest. The side panel has
-the recording setup and a scrolling plot of every EMG channel in the electrode colours.
-"""
 import colorsys
 import logging
 import time
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import mujoco
 import numpy as np
 
-from .body import ForearmModel
-from .engines.analytic import AnalyticEngine
-from .recording import Recording
+from ..recording import Recording
+from ..simulation.emg import EMGModel
+from ..simulation.musculoskeletal import ForearmModel
+
+if TYPE_CHECKING:
+    import viser
 
 PLOT_BINS = 400       # min/max bins across the EMG plot window
 PLOT_PERIOD = 0.1     # s between EMG plot / electrode colour updates (wall clock)
@@ -22,7 +23,7 @@ SOURCES_PERIOD = 0.25  # s between muscle-belly updates (re-sending the point cl
 log = logging.getLogger(__name__)
 
 
-def replay(recording, port=8080, emg_window=4.0):
+def replay(recording: Recording | str | Path, port: int = 8080, emg_window: float = 4.0) -> None:
     """Loop a Recording (or a recording file) in the web viewer until Ctrl+C."""
     import viser
     from mjviser import Viewer
@@ -34,13 +35,13 @@ def replay(recording, port=8080, emg_window=4.0):
     server = viser.ViserServer(port=port, verbose=False)
     view = ReplayView(server, model, recording, emg_window)
 
-    def step(m, d):
+    def step(m: mujoco.MjModel, d: mujoco.MjData) -> None:
         d.time += m.opt.timestep
         d.qpos[:] = q[int(d.time * fs) % len(q)]
         d.qvel[:] = 0
         mujoco.mj_forward(m, d)
 
-    def render(scene):
+    def render(scene: Any) -> None:
         scene.update_from_mjdata(d)
         view.update(d, d.time, scene._scene_offset)     # follow mjviser's camera-tracking offset
 
@@ -52,16 +53,16 @@ def replay(recording, port=8080, emg_window=4.0):
 class ReplayView:
     """The recording setup drawn over the arm and the EMG panel; update() once per rendered frame."""
 
-    def __init__(self, server, model, recording, emg_window=4.0):
+    def __init__(self, server: viser.ViserServer, model: ForearmModel, recording: Recording,
+                 emg_window: float = 4.0) -> None:
         self.server, self.model, self.rec = server, model, recording
         sub, electrodes = recording.subject, recording.electrodes
         self.exc = recording.labels["excitation"]
         self._last_plot = self._last_sources = self._last_colors = 0.0
         self._prepare_emg(recording.emg.astype(np.float32), recording.fs, emg_window)
 
-        # Muscle bellies mapped into the subject's cross-section, as the analytic engine sees them.
-        self.bellies = AnalyticEngine()
-        self.bellies.prepare(model, sub, electrodes)
+        # Muscle bellies mapped into the subject's cross-section, as the EMG model sees them.
+        self.bellies = EMGModel(model, sub, electrodes)
         C = len(electrodes)
         self.chan_rgb = np.array([colorsys.hsv_to_rgb(k / C, 0.85, 1.0) for k in range(C)])
         self.owner = np.repeat(np.arange(C), 2)                     # the channel of each pole
@@ -81,16 +82,16 @@ class ReplayView:
         self.labels = [sc.add_label(f"/setup/forearm/labels/{n}", n, position=p.mean(0) * [1.18, 1.18, 1.0],
                                     font_screen_scale=0.7) for n, p in zip(electrodes.names, poles)]
         src = self.bellies.sources(model.d)
-        self.alive = ((src[..., 2] < z_end) & (src[..., 2] > -0.02)).reshape(-1)
+        self.alive = ((src[..., 2] < z_end) & (src[..., 2] > -self.bellies.params.elbow_margin_m)).reshape(-1)
         self.sources = sc.add_point_cloud("/setup/forearm/muscles", src.reshape(-1, 3)[self.alive],
                                           np.zeros((int(self.alive.sum()), 3), np.uint8), point_size=0.004,
                                           point_shape="circle")
         self._add_gravity_and_armrest(sc)
         self._gui()
         self._emg_plot(electrodes.names)
-        self._camera_set = set()
+        self._camera_set: set[int] = set()
 
-    def _prepare_emg(self, emg, fs, emg_window):
+    def _prepare_emg(self, emg: np.ndarray, fs: float, emg_window: float) -> None:
         self.fs_emg = fs
         x = np.abs(emg)
         n = max(1, int(0.1 * fs))                                   # 100 ms envelope for the electrode colours
@@ -101,7 +102,7 @@ class ReplayView:
         self.stacked = emg / (2 * np.maximum(np.percentile(np.abs(emg), 99, axis=0), 1e-9)) + np.arange(C)[::-1]
         self.win = min(int(emg_window * fs), len(emg)) // PLOT_BINS * PLOT_BINS or len(emg)
 
-    def _add_gravity_and_armrest(self, sc):
+    def _add_gravity_and_armrest(self, sc: viser.SceneApi) -> None:
         """Gravity arrow (the camera's up is against it), camera placement, and the armrest if supported."""
         model, sub = self.model, self.rec.subject
         q0 = self.rec.labels["q"][0]
@@ -126,12 +127,12 @@ class ReplayView:
             sc.add_box("/setup/armrest", color=(120, 110, 100), dimensions=(1.2 * L, 0.12, 0.006),
                        position=centre, wxyz=vtf.SO3.from_matrix(R).wxyz, opacity=0.6)
 
-    def _gui(self):
+    def _gui(self) -> None:
         rec, sub, el = self.rec, self.rec.subject, self.rec.electrodes
         gui = self.server.gui
         with gui.add_folder("Recording"):
             gui.add_markdown(
-                f"**{rec.engine}** engine · **{el.device}** · {len(el)} electrodes · {rec.duration:.1f} s  \n"
+                f"**{el.device}** · {len(el)} electrodes · {rec.duration:.1f} s  \n"
                 f"skin r {sub.forearm_radius_mm:.0f} mm, fat {sub.fat_mm:.1f} mm · "
                 f"{'amputee (' + format(sub.residual_length, '.0%') + ')' if sub.amputee else 'intact'} · "
                 f"{'armrest' if sub.armrest else 'arm held up'}  \n"
@@ -141,10 +142,10 @@ class ReplayView:
                 box = gui.add_checkbox(name, initial_value=name != "Channel labels")
                 for h in handles:
                     h.visible = box.value
-                box.on_update(lambda _, box=box, hs=handles: [setattr(h, "visible", box.value) for h in hs])
+                box.on_update(lambda _, box=box, hs=handles: _set_visible(hs, box.value))
             self.color_mode = gui.add_dropdown("Electrode colour", ("EMG activity", "channel"))
 
-    def _emg_plot(self, names):
+    def _emg_plot(self, names: list[str]) -> None:
         hexes = ["#%02x%02x%02x" % tuple(_rgb(c)) for c in self.chan_rgb]
         C = len(names)
         with self.server.gui.add_folder("EMG"):
@@ -155,7 +156,7 @@ class ReplayView:
                 axes=({}, {"show": False}), cursor={"show": False}, legend={"show": True, "live": False},
                 height=40 + 22 * C, aspect=0.8)
 
-    def _emg_window(self, t):
+    def _emg_window(self, t: float) -> tuple[np.ndarray, ...]:
         """The `win` samples before t (wrapping like the replay), min/max decimated: (x, *channels)."""
         k1 = int(t * self.fs_emg)
         idx = np.arange(k1 - self.win, k1)
@@ -168,7 +169,7 @@ class ReplayView:
             x = x.reshape(PLOT_BINS, n)[:, [0, -1]].reshape(-1)
         return (x.astype(np.float64), *seg.T.astype(np.float64))
 
-    def update(self, d, t, offset):
+    def update(self, d: mujoco.MjData, t: float, offset: np.ndarray) -> None:
         """t: replay time (s); offset: the viewer's camera-tracking scene offset."""
         import viser.transforms as vtf
         for cid, client in self.server.get_clients().items():       # place the camera for new clients
@@ -183,7 +184,8 @@ class ReplayView:
             self.forearm.wxyz = vtf.SO3.from_matrix(axes.T).wxyz
             if self.sources.visible and now - self._last_sources > SOURCES_PERIOD:
                 self._last_sources = now
-                drive = np.repeat(self.exc[int(t * self.rec.fs_labels) % len(self.exc)], self.bellies.K)[self.alive]
+                exc = self.exc[int(t * self.rec.fs_labels) % len(self.exc)]
+                drive = np.repeat(exc, self.bellies.n_sources)[self.alive]
                 self.sources.points = self.bellies.sources(d).reshape(-1, 3)[self.alive].astype(np.float32)
                 self.sources.colors = _rgb(_heat(drive))
             if self.electrodes.visible and now - self._last_colors > PLOT_PERIOD:
@@ -198,17 +200,22 @@ class ReplayView:
             self.plot.data = self._emg_window(t)
 
 
-def _rgb(x):
+def _set_visible(handles: list[Any], visible: bool) -> None:
+    for h in handles:
+        h.visible = visible
+
+
+def _rgb(x: np.ndarray) -> np.ndarray:
     return (np.clip(x, 0, 1) * 255).astype(np.uint8)
 
 
-def _heat(x):
+def _heat(x: np.ndarray) -> np.ndarray:
     """Black -> red -> yellow for x in [0, 1]."""
     x = 0.15 + 0.85 * np.clip(x, 0, 1)
     return np.stack([np.clip(2 * x, 0, 1), np.clip(2 * x - 0.8, 0, 1), np.clip(3 * x - 2.4, 0, 1)], axis=-1)
 
 
-def _frustum(r0, r1, length, n=48):
+def _frustum(r0: float, r1: float, length: float, n: int = 48) -> tuple[np.ndarray, np.ndarray]:
     """Open tapered tube along +z: (vertices, faces)."""
     a = 2 * np.pi * np.arange(n) / n
     ring = np.stack([np.cos(a), np.sin(a), np.zeros(n)], 1)

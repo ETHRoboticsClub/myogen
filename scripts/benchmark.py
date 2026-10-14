@@ -63,7 +63,7 @@ def simulate_subject(job):
         return f"{job[0].name}: FAILED {type(e).__name__}: {e}"
 
 
-def _simulate_subject(folder, out, engine, electrodes, seed):
+def _simulate_subject(folder, out, electrodes, seed):
     import logging
 
     import myogen as mg
@@ -75,7 +75,7 @@ def _simulate_subject(folder, out, engine, electrodes, seed):
                                rest=np.concatenate([r["restimulus"] == 0 for r in recs]))
     if electrodes.endswith((".yml", ".yaml")):
         electrodes = mg.Electrodes.load(electrodes)
-    sim = mg.Simulator(electrodes, engine=engine, subject=dataclasses.replace(mg.Subject(), seed=seed))
+    sim = mg.Simulator(electrodes, subject=dataclasses.replace(mg.Subject(), seed=seed))
     emg = sim.run(motion)
     out.mkdir(parents=True, exist_ok=True)
     start = 0
@@ -90,10 +90,10 @@ def _simulate_subject(folder, out, engine, electrodes, seed):
 
 def cmd_simulate(a):
     out = SYNTHETIC / a.name
-    jobs = [(DB5 / f"s{s}", out / f"s{s}", a.engine, a.electrodes, 1000 + s) for s in a.subjects]
+    jobs = [(DB5 / f"s{s}", out / f"s{s}", a.electrodes, 1000 + s) for s in a.subjects]
     commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
     out.mkdir(parents=True, exist_ok=True)
-    (out / "config.json").write_text(json.dumps({"engine": a.engine, "electrodes": a.electrodes, "commit": commit,
+    (out / "config.json").write_text(json.dumps({"electrodes": a.electrodes, "commit": commit,
                                                  "subject": "Subject() with seed 1000 + subject"}))
     with Pool(min(a.workers, len(jobs))) as pool:
         for msg in pool.imap_unordered(simulate_subject, jobs):
@@ -344,7 +344,6 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("simulate")
     p.add_argument("--name", required=True)
-    p.add_argument("--engine", default="analytic", choices=("analytic", "biomime"))
     p.add_argument("--electrodes", default="myo", help="preset name or profile YAML")
     p.add_argument("--workers", type=int, default=10)
     for name in ("patterns", "regress"):

@@ -1,11 +1,11 @@
-"""The pipeline with the analytic engine: shapes, determinism, files, electrode physics."""
+"""The pipeline: shapes, determinism, files, electrode physics."""
 import numpy as np
 import pytest
 
 import myogen as mg
-from myogen.body import ForearmModel
-from myogen.engines.analytic import AnalyticEngine
-from myogen.muscles import MuscleActivity
+from myogen.simulation.emg import EMGModel
+from myogen.simulation.muscle_activity import MuscleActivity, MuscleController
+from myogen.simulation.musculoskeletal import ForearmModel
 
 
 @pytest.fixture(scope="module")
@@ -39,15 +39,14 @@ def test_electrode_off_the_forearm():
 
 def _rms(electrodes, muscle="EDC3_r"):
     model = ForearmModel()
-    engine = AnalyticEngine()
-    engine.prepare(model, mg.Subject(), electrodes)
+    emg = EMGModel(model, mg.Subject(), electrodes)
     T, nu = 200, model.nu
     drive = np.zeros((T, nu))
     drive[:, model.muscle_names.index(muscle)] = 0.5
     q = np.tile(model.default_qpos, (T, 1))
     activity = MuscleActivity(100.0, drive, drive, np.zeros_like(drive), drive, np.ones((T, nu)), q, q, np.zeros((T, model.m.nv)),
                               np.zeros((T, model.m.nv)), np.zeros(T))
-    return np.sqrt((engine.generate(activity, np.random.default_rng(0)).emg ** 2).mean(0))
+    return np.sqrt((emg.generate(activity, np.random.default_rng(0)) ** 2).mean(0))
 
 
 def test_bipolar_physics():
@@ -61,7 +60,6 @@ def test_bipolar_physics():
 
 def test_effort_reaches_the_drive_not_the_mechanics():
     """Effort is torque-neutral co-activation: it raises the EMG drive and leaves the motion unchanged."""
-    from myogen.muscles import MuscleController
     model = ForearmModel()
     T = 150
     q = np.tile(model.default_qpos, (T, 1))

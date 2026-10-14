@@ -1,22 +1,13 @@
-"""The input: hand and wrist joint angles over time.
+from __future__ import annotations
 
-    motion = HandMotion.load("motion.h5")                       # angles already in the model's joint names
-    motion = JointAdapter({"index_pip": "pm2_flexion_r"})(my_angles, fs=120)   # your names -> the model's
-
-File format (.h5 / .hdf5, or .npz with the same names):
-    angles        float (T, J)   radians, one column per joint
-    joint_names   str (J,)       model joint names (body.HAND_JOINTS, optionally elbow_flexion_r)
-    fs            float          sample rate in Hz (HDF5: file attribute); any rate works
-    rest          bool (T,)      optional: where the hand is relaxed (sets the posture passive forces return to)
-Joints that are not given are filled (see JointAdapter) and listed in HandMotion.filled.
-"""
 import logging
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
-from .body import ELBOW_JOINT, HAND_JOINTS
+from ..simulation.musculoskeletal import ELBOW_JOINT, HAND_JOINTS
 
 MIN_DURATION = 0.5          # s
 SUFFIXES = (".h5", ".hdf5", ".npz")
@@ -37,13 +28,14 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class HandMotion:
-    angles: np.ndarray                   # (T, 23) radians, columns in body.HAND_JOINTS order
+    """The input movement: hand and wrist joint angles over time, at any sample rate (file format: README)."""
+    angles: np.ndarray                   # (T, 23) radians, columns in musculoskeletal.HAND_JOINTS order
     fs: float                            # Hz
     elbow: np.ndarray | None = None      # (T,) radians; None = the subject's elbow angle
     rest: np.ndarray | None = None       # (T,) bool, True where the hand is relaxed
-    filled: tuple = field(default=())    # joints that were not given (filled by JointAdapter)
+    filled: tuple[str, ...] = ()         # joints that were not given (filled by JointAdapter)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         self.angles = np.asarray(self.angles, float)
         self.fs = float(self.fs) if np.ndim(self.fs) == 0 else self.fs
         if self.angles.ndim != 2 or self.angles.shape[1] != len(HAND_JOINTS):
@@ -63,10 +55,10 @@ class HandMotion:
                 setattr(self, name, v)
 
     @property
-    def duration(self):
+    def duration(self) -> float:
         return len(self.angles) / self.fs
 
-    def resampled(self, fs):
+    def resampled(self, fs: float) -> HandMotion:
         """A copy at fs: angles linearly interpolated, rest labels by nearest sample."""
         t_in = np.arange(len(self.angles)) / self.fs
         t = np.arange(int(round(self.duration * fs))) / fs
@@ -76,7 +68,7 @@ class HandMotion:
                           None if self.rest is None else self.rest[nearest], self.filled)
 
     @classmethod
-    def load(cls, path, adapter=None):
+    def load(cls, path: str | Path, adapter: JointAdapter | None = None) -> HandMotion:
         """Read a motion file (format: module docstring); `adapter` maps joint names other than the model's."""
         path = _checked(path)
         if not path.exists():
@@ -99,7 +91,7 @@ class HandMotion:
         return (adapter or JointAdapter())(dict(zip(names, angles.T)), float(np.asarray(data["fs"])),
                                            rest=data.get("rest"))
 
-    def save(self, path):
+    def save(self, path: str | Path) -> Path:
         path = _checked(path)
         names = list(HAND_JOINTS) + ([ELBOW_JOINT] if self.elbow is not None else [])
         angles = self.angles if self.elbow is None else np.column_stack([self.angles, self.elbow])
@@ -120,20 +112,22 @@ class JointAdapter:
     """Your joint angles -> HandMotion in the model's joints.
 
     mapping: {your_name: model_joint} or {your_name: (model_joint, sign, offset_rad)}, for names that differ from
-    the model's (body.HAND_JOINTS, elbow_flexion_r); model names pass through without a mapping. Joints you do not
-    measure are filled: a finger's MCP and PIP from each other, its DIP from the PIP (DIP_PER_PIP), anything else
-    at the relaxed posture (REST_POSTURE).
+    the model's (musculoskeletal.HAND_JOINTS, elbow_flexion_r); model names pass through without a mapping. Joints
+    you do not measure are filled: a finger's MCP and PIP from each other, its DIP from the PIP (DIP_PER_PIP),
+    anything else at the relaxed posture (REST_POSTURE).
     """
 
-    def __init__(self, mapping=None, degrees=False):
-        self.mapping = {k: (v, 1.0, 0.0) if isinstance(v, str) else tuple(v) for k, v in (mapping or {}).items()}
+    def __init__(self, mapping: Mapping[str, str | tuple[str, float, float]] | None = None,
+                 degrees: bool = False) -> None:
+        self.mapping: dict[str, tuple[str, float, float]] = {
+            k: (v, 1.0, 0.0) if isinstance(v, str) else tuple(v) for k, v in (mapping or {}).items()}
         self.degrees = degrees
         known = set(HAND_JOINTS) | {ELBOW_JOINT}
         bad = sorted(v[0] for v in self.mapping.values() if v[0] not in known)
         if bad:
             raise ValueError(f"unknown model joints {bad}; model joints are {HAND_JOINTS + [ELBOW_JOINT]}")
 
-    def __call__(self, angles, fs, rest=None):
+    def __call__(self, angles: Mapping[str, np.ndarray], fs: float, rest: np.ndarray | None = None) -> HandMotion:
         """angles: {name: (T,) array}. Returns a HandMotion."""
         given = {}
         for name, values in angles.items():
@@ -152,7 +146,7 @@ class JointAdapter:
                           tuple(filled))
 
 
-def _fill(given, T):
+def _fill(given: dict[str, np.ndarray], T: int) -> tuple[dict[str, np.ndarray], list[str]]:
     """All hand joints from the given ones (see JointAdapter). Returns ({joint: (T,)}, filled names)."""
     q = {j: v for j, v in given.items() if j != ELBOW_JOINT}
     for f in "2345":
@@ -169,7 +163,7 @@ def _fill(given, T):
     return q, filled
 
 
-def example_motion(duration=6.0, fs=100.0):
+def example_motion(duration: float = 6.0, fs: float = 100.0) -> HandMotion:
     """Open-close grasps with wrist flexion and pronation, for trying the tool (all joints given)."""
     t = np.arange(int(duration * fs)) / fs
     close = 0.5 - 0.5 * np.cos(2 * np.pi * t / 3.0)                  # 0 open .. 1 closed, every 3 s
@@ -183,7 +177,7 @@ def example_motion(duration=6.0, fs=100.0):
     return HandMotion(np.column_stack([q[j] for j in HAND_JOINTS]), fs, rest=close < 0.05)
 
 
-def _checked(path):
+def _checked(path: str | Path) -> Path:
     path = Path(path)
     if path.suffix not in SUFFIXES:
         raise ValueError(f"motion file must be .h5, .hdf5 or .npz, got {path.name}")

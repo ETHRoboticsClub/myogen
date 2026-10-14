@@ -12,16 +12,14 @@ dependencies = ["mujoco>=3.4", "numpy", "scipy", "h5py", "pyyaml"]
 
 [project.optional-dependencies]
 viewer = ["mjviser"]
-biomime = ["torch", "gdown"]          # CPU-only torch: add --extra-index-url https://download.pytorch.org/whl/cpu
 model-build = ["myo-sim>=0.2.3"]      # only for scripts/build_model.py
 test = ["pytest"]
 
 [project.scripts]
-myogen = "myogen.cli:main"
+myogen = "myogen.tools.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
 myogen = ["models/*.xml", "models/meshes/*.stl"]
-"myogen.engines.biomime.vendor" = ["generator.yaml", "LICENSE", "README.md"]

@@ -1,7 +1,7 @@
 """Simulate the EMG of a NinaPro recording from its glove motion, and compare it with the real EMG.
 
-    python scripts/ninapro_compare.py data/real/ninapro_db5/s1/S1_E2_A1.mat --engine biomime --start 20 --duration 30
-    python scripts/ninapro_compare.py data/real/ninapro_db1/s1/S1_A1_E2.mat --engine analytic
+    python scripts/ninapro_compare.py data/real/ninapro_db5/s1/S1_E2_A1.mat --start 20 --duration 30
+    python scripts/ninapro_compare.py data/real/ninapro_db1/s1/S1_A1_E2.mat
 
 Needs myogen (pip install -e .), and matplotlib for the figure. Writes into --out:
     simulated.h5      the myogen Recording (myogen replay simulated.h5)
@@ -63,9 +63,6 @@ def plot(path, real, sim, motion, fs, title, channels=8):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("mat", help="a NinaPro DB1 / DB5 .mat file")
-    ap.add_argument("--engine", choices=("analytic", "biomime"), default="analytic")
-    ap.add_argument("--muap-bank", help="biomime: MUAP bank (default: where `myogen biomime-setup` puts it)")
-    ap.add_argument("--gain", type=float, default=1.0, help="biomime: global amplitude")
     ap.add_argument("--electrodes", help="electrode profile YAML (default: the dataset's preset, myo / otto_bock)")
     ap.add_argument("--subject-seed", type=int, help="a random subject (Subject.random) instead of the average one")
     ap.add_argument("--start", type=float, default=0.0, help="s into the recording")
@@ -90,14 +87,13 @@ def main():
     device = "myo" if rec["dataset"] == "db5" else "otto_bock"
     electrodes = mg.Electrodes.load(a.electrodes) if a.electrodes else mg.Electrodes.preset(device)
     subject = mg.Subject.random(a.subject_seed) if a.subject_seed is not None else mg.Subject()
-    options = {"muap_bank": a.muap_bank, "gain": a.gain} if a.engine == "biomime" else {}
-    sim = mg.Simulator(electrodes, engine=a.engine, subject=subject, **options)
+    sim = mg.Simulator(electrodes, subject=subject)
     run = sim.simulate_clean(motion)
     recording = sim.record(run)
 
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
-    report = {"file": str(a.mat), "engine": a.engine, "window_s": [a.start, a.start + a.duration],
+    report = {"file": str(a.mat), "window_s": [a.start, a.start + a.duration],
               "tracking_rmse_deg": recording.qc["rmse_deg"]}
     if a.calibrate:
         cal = mg.calibrate(sim, [motion], [real], [rest], fit_rotation=a.fit_rotation)
@@ -111,7 +107,7 @@ def main():
 
     recording.save(out / "simulated.h5")
     (out / "comparison.json").write_text(json.dumps(report, indent=1))
-    print(f"\n{rec['path'].name}  {a.engine} engine  {a.start:.0f}-{a.start + a.duration:.0f} s  "
+    print(f"\n{rec['path'].name}  {a.start:.0f}-{a.start + a.duration:.0f} s  "
           f"tracking RMSE {recording.qc['rmse_deg']:.2f} deg")
     print(f"{'statistic':24s}{'real':>10s}{'simulated':>11s}")
     for k, (r, s) in stats.items():
@@ -119,7 +115,7 @@ def main():
     try:
         plot(out / "comparison.png", real, recording.emg, {"angles": motion.angles, "fs": fs, "rest": rest,
                                                             "device": electrodes.device}, fs,
-             f"{rec['path'].name} ({a.start:.0f}-{a.start + a.duration:.0f} s): real vs {a.engine}")
+             f"{rec['path'].name} ({a.start:.0f}-{a.start + a.duration:.0f} s): real vs simulated")
     except ImportError:
         print("matplotlib not installed: no figure")
     print(f"wrote {out}/simulated.h5, comparison.json, comparison.png  (myogen replay {out}/simulated.h5)")
