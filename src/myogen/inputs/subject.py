@@ -34,6 +34,7 @@ class Subject:
     cocontraction: float = 0.02       # baseline co-activation while the hand is engaged (with random episodes)
     hold_tone: float = 0.15           # co-activation while moving or holding a posture away from rest; [0.05, 0.25]
     move_cocontraction: float = 0.125  # extra co-activation proportional to movement speed; [0, 0.25]
+    antagonist_ratio: float = 0.25    # co-activation of the antagonists relative to the agonists; [0.1, 0.4]
     grip_load: float = 0.25           # probability of squeezing episodes while the hand is closed; [0, 0.5]
     seed: int = 0                     # randomness of the EMG noise and of the effort episodes
 
@@ -80,4 +81,5 @@ class Subject:
             move_cocontraction=float(rng.uniform(0.0, 0.25)),
             grip_load=float(rng.uniform(0.0, 0.5)),
             seed=int(rng.integers(2**31)),
+            antagonist_ratio=float(rng.uniform(0.1, 0.4)),   # drawn last: the other draws stay as they were
         )

@@ -72,3 +72,22 @@ def test_effort_reaches_the_drive_not_the_mechanics():
     assert np.array_equal(plain.q, effortful.q)
     i = model.muscle_names.index("EDC3_r")
     assert effortful.drive[:, i].min() >= 0.2 > plain.drive[:, i].max()
+
+
+def test_effort_is_directional():
+    """Holding the wrist flexed co-activates mainly the wrist flexors, holding it extended mainly the extensors;
+    the antagonists get Subject.antagonist_ratio of the agonists' effort."""
+    from myogen.params import EffortParams
+    from myogen.simulation.muscle_activity import effort
+    model = ForearmModel()
+    T, wrist = 300, model.m.jnt_qposadr[model.m.joint("flexion_r").id]
+    q_rest = model.default_qpos.copy()
+    flexors, extensors = ([model.muscle_names.index(n) for n in names]
+                          for names in (("FCR_r", "FCU_r"), ("ECRB_r", "ECRL_r")))
+    subject = mg.Subject(antagonist_ratio=0.25)
+    for angle, agonists, antagonists in ((0.6, flexors, extensors), (-0.6, extensors, flexors)):
+        q = np.tile(q_rest, (T, 1))
+        q[:, wrist] = angle
+        co, _ = effort(model, q, q_rest, subject, np.random.default_rng(0), EffortParams(), 100.0)
+        held = co[T // 2]
+        assert held[agonists].min() > 2 * held[antagonists].max() > 0
