@@ -55,6 +55,12 @@ class EffortParams:
     speed_deadzone: float = 0.15          # /s, below this a joint is not moving (sensor jitter)
     speed_max: float = 1.5                # /s, speed beyond which co-activation stops growing
     speed_engaged: float = 0.5            # /s, speed at which a joint counts as fully engaged
+    return_effort: float = 1.0            # effort of moving back towards the relaxed posture, relative to moving away
+    finger_coupling: float = 0.0          # share of a finger's engagement reaching its neighbour (^2 the next one)
+    rest_effort: float = 1.0              # effort left where the motion is labelled rest (HandMotion.rest)
+    # Effort per unit of engagement, by joint name prefix (others: 1): holding the wrist away from rest takes more
+    # effort than the same fraction of a finger's range.
+    joint_effort: dict[str, float] = field(default_factory=dict)
     posture_deadzone: float = 0.1         # distance from the relaxed posture that is still relaxed
     posture_engaged: float = 0.4          # distance beyond the dead zone at which a joint is fully engaged
     cocontraction_peak: float = 0.3       # co-activation level reached in an episode

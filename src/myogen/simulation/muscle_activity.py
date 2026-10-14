@@ -206,17 +206,23 @@ class MuscleController:
 # -- effort beyond the mechanical minimum: co-activation and grip -------------------------------------------------
 
 def effort(model: ForearmModel, q_ref: np.ndarray, q_rest: np.ndarray, subject: Subject, rng: np.random.Generator,
-           params: EffortParams | None = None, fs: float = 100.0) -> tuple[np.ndarray, np.ndarray]:
+           params: EffortParams | None = None, fs: float = 100.0, rest: np.ndarray | None = None
+           ) -> tuple[np.ndarray, np.ndarray]:
     """(co-activation (T, nu), grip load (T,)). People drive their muscles harder than the mechanical minimum.
 
     A joint is engaged while it moves or is held away from the relaxed posture, in the direction it moves or is held.
+    Fingers are not independent: a finger's engagement spreads to the others (EffortParams.finger_coupling).
     Each muscle gets the effort of the engaged joints it acts on, in proportion to its moment arm relative to the
     joint's strongest muscle: in full if it pulls the joint that way (agonist), a fraction
     (Subject.antagonist_ratio) if it pulls the other way. A relaxed hand is nearly electrically silent, as in real
-    recordings.
+    recordings: where the motion says the hand is relaxed (rest: (T,) bool), the effort falls to
+    EffortParams.rest_effort of its value.
     """
     p = params or EffortParams()
     engaged, moving = joint_engagement(model, q_ref, q_rest, p, fs)
+    weight = joint_weights(model, p.joint_effort)
+    engaged = np.clip(couple_fingers(model, engaged, p.finger_coupling) * weight, -1, 1)
+    moving = np.clip(couple_fingers(model, moving, p.finger_coupling) * weight, -p.speed_max, p.speed_max)
     involvement = muscle_involvement(model, q_rest)
     # Co-activation level: the subject's baseline with random episodes, plus tone while engaged and moving.
     level = _episodes(rng, len(q_ref), fs, base=subject.cocontraction, high=p.cocontraction_peak,
@@ -225,19 +231,52 @@ def effort(model: ForearmModel, q_ref: np.ndarray, q_rest: np.ndarray, subject: 
     r = subject.antagonist_ratio
     co_activation = (level[:, None] * per_muscle(engaged, involvement, r)
                      + subject.move_cocontraction * per_muscle(moving, involvement, r))
+    if rest is not None and p.rest_effort < 1:
+        lp = signal.butter(2, p.speed_lowpass_hz, fs=fs, output="sos")
+        relaxed = np.clip(signal.sosfiltfilt(lp, np.asarray(rest, float)), 0, 1)
+        co_activation *= (1 - (1 - p.rest_effort) * relaxed)[:, None]
     return co_activation, grip_load(model, q_ref, subject, rng, p, fs)
+
+
+def joint_weights(model: ForearmModel, joint_effort: dict[str, float]) -> np.ndarray:
+    """(nv,) effort weight of each joint: the longest prefix of its name in joint_effort (1 if none)."""
+    w = np.ones(model.m.nv)
+    for j in range(model.m.njnt):
+        name = model.m.joint(j).name
+        match = max((k for k in joint_effort if name.startswith(k)), key=len, default=None)
+        if match is not None:
+            w[model.m.jnt_dofadr[j]] = joint_effort[match]
+    return w
+
+
+def couple_fingers(model: ForearmModel, joint_level: np.ndarray, coupling: float) -> np.ndarray:
+    """(T, nv) joint levels with each finger's (2-5) flexion levels spread to the same joints of the other fingers,
+    weighted by coupling ** (distance between the fingers): the enslaving of the multi-finger muscles."""
+    if coupling <= 0:
+        return joint_level
+    out = joint_level.copy()
+    for joint in ("mcp{}_flexion_r", "pm{}_flexion_r", "md{}_flexion_r"):
+        dofs = [model.m.jnt_dofadr[model.m.joint(joint.format(f)).id] for f in "2345"]
+        for i, a in enumerate(dofs):
+            for k, b in enumerate(dofs):
+                if k != i:
+                    out[:, a] += coupling ** abs(i - k) * joint_level[:, b]
+    return out
 
 
 def joint_engagement(model: ForearmModel, q_ref: np.ndarray, q_rest: np.ndarray, p: EffortParams, fs: float
                      ) -> tuple[np.ndarray, np.ndarray]:
     """(engaged (T, nv) in [-1, 1], moving (T, nv)): how far each joint is held from rest and how fast it moves,
-    signed by direction (the sign of the joint angle change it calls for)."""
+    signed by direction (the sign of the joint angle change it calls for). Moving back towards the relaxed posture
+    is mostly letting go: it counts EffortParams.return_effort as much as moving away from it."""
     span = np.maximum(model.qmax - model.qmin, 1e-6)
     u, u_rest = q_ref / span, q_rest / span                     # joint angles as fractions of their range
     lp = signal.butter(2, p.speed_lowpass_hz, fs=fs, output="sos")
     velocity = np.gradient(u, axis=0) * fs
     speed = signal.sosfiltfilt(lp, np.abs(velocity), axis=0)
-    moving = np.sign(signal.sosfiltfilt(lp, velocity, axis=0)) * np.clip(speed - p.speed_deadzone, 0, p.speed_max)
+    direction = signal.sosfiltfilt(lp, velocity, axis=0)
+    outward = np.where(direction * (u - u_rest) >= 0, 1.0, p.return_effort)
+    moving = np.sign(direction) * np.clip(speed - p.speed_deadzone, 0, p.speed_max) * outward
     away = np.sign(u - u_rest) * np.clip(np.abs(u - u_rest) - p.posture_deadzone, 0, None) / p.posture_engaged
     engaged = np.clip(signal.sosfiltfilt(lp, np.clip(away + moving / p.speed_engaged, -1, 1), axis=0), -1, 1)
     return engaged, moving

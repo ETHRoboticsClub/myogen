@@ -67,8 +67,10 @@ class Simulator:
         log.info(f"simulating {motion.duration:.1f} s: {len(self.electrodes)} electrodes ({self.electrodes.device})")
 
         # The movement as the model's joint trajectory, and the loads on the skeleton.
-        q_ref, q_rest, hand = self.joint_trajectory(motion.resampled(ctrl.fs))
-        co_activation, grip = effort(self.model, q_ref, q_rest, sub, effort_rng, self.params.effort, ctrl.fs)
+        resampled = motion.resampled(ctrl.fs)
+        q_ref, q_rest, hand = self.joint_trajectory(resampled)
+        co_activation, grip = effort(self.model, q_ref, q_rest, sub, effort_rng, self.params.effort, ctrl.fs,
+                                     rest=self._rest_ref(resampled, len(q_ref)))
         fibre_rest = self.model.prepare(sub, q_ref[0], q_rest)
         grip_torque = self.model.grip_torque(grip, finger_closure(hand, self.params.effort.pip_closed_rad))
         # Muscle activity that reproduces it.
@@ -124,6 +126,13 @@ class Simulator:
             hand_rest = np.array([REST_POSTURE[j] for j in HAND_JOINTS])
         q_rest = self.model.full_q(hand_rest[None], np.radians(self.subject.elbow_angle_deg))[0]
         return q_ref, q_rest, hand
+
+    @staticmethod
+    def _rest_ref(motion: HandMotion, n_ticks: int) -> np.ndarray | None:
+        """(T,) the motion's rest labels at the control rate, with the warm-up hold (None: no labels)."""
+        if motion.rest is None:
+            return None
+        return np.concatenate([np.repeat(motion.rest[:1], n_ticks - len(motion.rest)), motion.rest])
 
     def quality(self, emg: np.ndarray, labels: dict[str, np.ndarray], activity: MuscleActivity) -> dict[str, Any]:
         """Did the simulated hand do what the motion says? (thresholds: SimParams.qc)"""
