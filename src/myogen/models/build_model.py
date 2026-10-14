@@ -1,4 +1,4 @@
-"""Rebuild the packaged forearm model from MyoArm: python scripts/build_model.py (needs myo-sim)
+"""Rebuild the packaged forearm model from MyoArm: python src/myogen/models/build_model.py (needs myo-sim)
 -> src/myogen/models/myoforearm_r.xml + meshes/.
 
 Compared to MyoHand it keeps the elbow and the proximal forearm muscles a NinaPro-style armband sits over
@@ -23,9 +23,8 @@ from myo_sim.build.hand import (
     tendon_wrap_geom_names,
 )
 
-
 log = logging.getLogger(__name__)
-OUT_DIR = Path(__file__).resolve().parents[1] / "src" / "myogen" / "models"
+OUT_DIR = Path(__file__).resolve().parent
 OUT_XML = OUT_DIR / "myoforearm_r.xml"
 
 FOREARM_EXTRA_ACTUATORS = frozenset({"ANC", "SUP", "BIClong", "BICshort", "BRA", "BRD", "TRIlong", "TRIlat", "TRImed"})
@@ -94,6 +93,7 @@ def build():
         shutil.copy(src, mesh_out / src.name)
         xml = xml.replace(f'file="{mesh.file}"', f'file="{src.name}"')
     xml = re.sub(r'meshdir="[^"]*"', 'meshdir="meshes"', xml)
+    xml = re.sub(r' texturedir="[^"]*"', '', xml)               # only builtin textures: no local paths
     OUT_XML.write_text(xml)
     check = mujoco.MjModel.from_xml_path(str(OUT_XML))
     assert (check.nq, check.nu) == (model.nq, model.nu)

@@ -4,16 +4,30 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "myogen"
-version = "0.2.0"
+version = "0.3.0"
 description = "Synthetic forearm sEMG from hand and wrist joint angles, on a musculoskeletal forearm model"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE", "src/myogen/models/LICENSE-MyoSim"]
+authors = [{ name = "Marcos Oriol" }]
 requires-python = ">=3.11"
 dependencies = ["mujoco>=3.4", "numpy", "scipy", "h5py", "pyyaml"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Repository = "https://github.com/ETHRoboticsClub/myogen"
 
 [project.optional-dependencies]
-viewer = ["mjviser"]
-model-build = ["myo-sim>=0.2.3"]      # only for scripts/build_model.py
-test = ["pytest"]
+viewer = ["mjviser"]                  # myogen replay
+examples = ["matplotlib", "ipykernel"]   # the notebooks
+dev = ["pytest", "mypy", "ruff", "nbconvert", "matplotlib", "ipykernel"]
+model-build = ["myo-sim>=0.2.3"]      # only for src/myogen/models/build_model.py
 
 [project.scripts]
 myogen = "myogen.tools.cli:main"
@@ -22,4 +36,18 @@ myogen = "myogen.tools.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-myogen = ["models/*.xml", "models/meshes/*.stl"]
+myogen = ["py.typed", "models/*.xml", "models/meshes/*.stl", "models/LICENSE-MyoSim", "models/build_model.py"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E731", "B905"]          # short local lambdas; zip over equal-length arrays
+
+[tool.mypy]
+ignore_missing_imports = true

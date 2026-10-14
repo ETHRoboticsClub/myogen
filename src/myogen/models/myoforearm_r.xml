@@ -1,5 +1,5 @@
 <mujoco model="myoforearm_r">
-  <compiler angle="radian" meshdir="meshes" texturedir="/home/marcos-oriol/Documents/thesis/simulations/myoforearm/.venv/lib/python3.12/site-packages/myo_sim/models/"/>
+  <compiler angle="radian" meshdir="meshes"/>
 
   <default>
     <geom contype="0" conaffinity="0"/>

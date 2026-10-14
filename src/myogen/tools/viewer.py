@@ -146,7 +146,7 @@ class ReplayView:
             self.color_mode = gui.add_dropdown("Electrode colour", ("EMG activity", "channel"))
 
     def _emg_plot(self, names: list[str]) -> None:
-        hexes = ["#%02x%02x%02x" % tuple(_rgb(c)) for c in self.chan_rgb]
+        hexes = ["#{:02x}{:02x}{:02x}".format(*_rgb(c)) for c in self.chan_rgb]
         C = len(names)
         with self.server.gui.add_folder("EMG"):
             self.plot = self.server.gui.add_uplot(

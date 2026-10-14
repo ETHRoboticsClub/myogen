@@ -29,7 +29,7 @@ class EMGModel:
         self.data = mujoco.MjData(model.m)              # scratch state for the per-tick geometry
         self.fat = subject.fat_mm / 1000
         self.limb_length = subject.residual_length * model.forearm_length   # shorter for amputees
-        
+
         # Fixed per-subject (x, y) offset of every source: muscles sit slightly differently in each person.
         self.source_offset = np.random.default_rng(subject.seed).normal(
             0.0, subject.muscle_spread_mm / 1000, size=(model.nu, self.n_sources, 2))

@@ -14,7 +14,8 @@ from collections.abc import Callable, Sequence
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    ap = argparse.ArgumentParser(prog="myogen", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(prog="myogen", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("-q", "--quiet", action="store_true", help="warnings and errors only")
     cmd = ap.add_subparsers(dest="command", required=True, metavar="command")
 

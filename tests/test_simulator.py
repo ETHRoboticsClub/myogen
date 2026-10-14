@@ -44,8 +44,9 @@ def _rms(electrodes, muscle="EDC3_r"):
     drive = np.zeros((T, nu))
     drive[:, model.muscle_names.index(muscle)] = 0.5
     q = np.tile(model.default_qpos, (T, 1))
-    activity = MuscleActivity(100.0, drive, drive, np.zeros_like(drive), drive, np.ones((T, nu)), q, q, np.zeros((T, model.m.nv)),
-                              np.zeros((T, model.m.nv)), np.zeros(T))
+    nv = model.m.nv
+    activity = MuscleActivity(100.0, drive, drive, np.zeros_like(drive), drive, np.ones((T, nu)), q, q,
+                              np.zeros((T, nv)), np.zeros((T, nv)), np.zeros(T))
     return np.sqrt((emg.generate(activity, np.random.default_rng(0)) ** 2).mean(0))
 
 

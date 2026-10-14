@@ -63,7 +63,7 @@ class MuscleController:
         for name in p.weak_joints:
             dof = m.jnt_dofadr[m.joint(name).id]
             self.reserve_w[dof], self.reserve_lim[dof] = p.weak_reserve_cost, p.weak_reserve_max_nm
-        
+
         omega = 2 * np.pi * p.pd_bandwidth_hz
         self.kp = omega ** 2
         self.kd = 2 * p.pd_damping * omega
