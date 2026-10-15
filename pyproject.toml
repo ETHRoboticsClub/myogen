@@ -11,7 +11,7 @@ license = "MIT"
 license-files = ["LICENSE", "src/myogen/models/LICENSE-MyoSim"]
 authors = [{ name = "Marcos Oriol" }]
 requires-python = ">=3.11"
-dependencies = ["mujoco>=3.4", "numpy", "scipy", "h5py", "pyyaml"]
+dependencies = ["mujoco>=3.4", "numpy", "scipy", "h5py", "pyyaml", "rich"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
@@ -25,8 +25,8 @@ Repository = "https://github.com/ETHRoboticsClub/myogen"
 
 [project.optional-dependencies]
 viewer = ["mjviser"]                  # myogen replay
-examples = ["matplotlib", "ipykernel"]   # the notebooks
-dev = ["pytest", "mypy", "ruff", "nbconvert", "matplotlib", "ipykernel"]
+examples = ["matplotlib", "ipykernel", "ipywidgets"]   # the notebooks (ipywidgets: live progress bars)
+dev = ["pytest", "mypy", "ruff", "nbconvert", "matplotlib", "ipykernel", "ipywidgets"]
 model-build = ["myo-sim>=0.2.3"]      # only for src/myogen/models/build_model.py
 
 [project.scripts]

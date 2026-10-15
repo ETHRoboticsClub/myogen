@@ -92,9 +92,8 @@ class Electrodes:
         return cls(electrodes, **kwargs)
 
     @classmethod
-    def myo(cls, position_cm: float = 3.1, rotation_deg: float = 67.5) -> Electrodes:
-        """NinaPro DB5: two Myo armbands (8 pods each), the second 3.5 cm distal and rotated 22.5 deg. The default
-        rotation is the one that best aligns the simulated channels with DB5's (9 of 10 subjects within 22.5 deg)."""
+    def myo(cls, position_cm: float = 3.1, rotation_deg: float = 0.0) -> Electrodes:
+        """NinaPro DB5: two Myo armbands (8 pods each), the second 3.5 cm distal and rotated 22.5 deg."""
         return cls.ring(8, position_cm, rotation_deg, rings=2, ring_gap_mm=35.0, ied_mm=15.0, device="myo",
                         noise_uv=5.0)
 
