@@ -99,14 +99,33 @@ class EMGModel:
         in_limb = (src[:, 2] < self.limb_length) & (src[:, 2] > -self.params.elbow_margin_m)
         return (np.exp(-dist / self.decay) * (in_limb * self.source_amp)[:, None]).astype(np.float32)
 
+    def pole_weights(self, qpos: np.ndarray) -> np.ndarray:
+        """(nu * K, 3 C) per channel: the source's gain at pole 1, its propagating gain at pole 2 (seen after the
+        conduction delay) and its in-phase gain at pole 2. Near a channel a source's potential travels under both
+        poles; far from it, it reaches both nearly in phase and the bipolar derivation cancels it. The propagating
+        share is exp(-(distance - superficial distance) / near_field_mm), at most 1 (infinite: all propagating)."""
+        g = self.gains(qpos)
+        g1, g2 = g[:, 0::2], g[:, 1::2]
+        near = np.ones_like(g2)
+        if np.isfinite(self.params.near_field_mm):
+            self.data.qpos[:] = qpos
+            mujoco.mj_kinematics(self.model.m, self.data)
+            src = self.sources(self.data).reshape(-1, 3)
+            mid = self.poles.mean(1)                                             # (C, 3) electrode centres
+            dist = np.linalg.norm(src[:, None, :] - mid[None], axis=-1)
+            d0 = self.fat + self.params.superficial_depth_m
+            near = np.exp(-np.maximum(dist - d0, 0) / (self.params.near_field_mm / 1000)).astype(np.float32)
+        return np.stack([g1, g2 * near, g2 * (1 - near)], axis=-1).reshape(len(g), -1)
+
     # -- signals -----------------------------------------------------------------------------------------------
 
     def _pole_signals(self, envelope: np.ndarray, qpos: np.ndarray, fs_ctrl: float, rng: np.random.Generator,
                       chunk_ticks: int = 200) -> np.ndarray:
-        """(T * upsample, 2 C) monopolar signal at every pole: each source fires band-limited noise scaled by its
-        muscle's envelope, and each pole sums the sources weighted by their gains at that tick's posture."""
+        """(T * upsample, 3 C) signal at every pole (pole 1, pole 2 propagating, pole 2 in phase: pole_weights): each
+        source fires band-limited noise scaled by its muscle's envelope, and each pole sums the sources weighted by
+        their gains at that tick's posture."""
         n_ticks, n_muscles = envelope.shape
-        K, n_poles = self.n_sources, 2 * len(self.poles)
+        K, n_poles = self.n_sources, 3 * len(self.poles)
         n_src = n_muscles * K
         upsample = int(round(self.fs / fs_ctrl))          # EMG samples per control tick
         # Band-pass shaping white noise into the EMG spectrum; its state carries across chunks.
@@ -115,6 +134,8 @@ class EMGModel:
                                  fs=self.fs, output="sos")
         filter_state = np.zeros((bandpass.shape[0], 2, n_src))
         tick_index = np.arange(n_ticks)
+        # The geometry changes with posture, far slower than the control rate: computed every geometry_step ticks.
+        geometry_step = max(1, int(round(fs_ctrl / self.params.geometry_hz)))
         pole_emg = np.empty((n_ticks * upsample, n_poles), np.float32)
         # Chunked so the (samples x sources) noise array stays small.
         for t0 in range(0, n_ticks, chunk_ticks):
@@ -125,13 +146,33 @@ class EMGModel:
             noise, filter_state = signal.sosfilt(bandpass, rng.standard_normal((n, n_src)), axis=0, zi=filter_state)
             src = (noise.reshape(n, n_muscles, K) * amp[:, :, None]).reshape(t1 - t0, upsample, n_src)
             src = src.astype(np.float32)
-            gain = np.stack([self.gains(q) for q in qpos[t0:t1]])                          # (ticks, n_src, 2C)
+            gain = self._chunk_gains(qpos, t0, t1, geometry_step)                          # (ticks, n_src, 2C)
             pole_emg[t0 * upsample:t1 * upsample] = np.einsum("tus,tsp->tup", src, gain).reshape(n, n_poles)
         return pole_emg
 
+    def _chunk_gains(self, qpos: np.ndarray, t0: int, t1: int, step: int) -> np.ndarray:
+        """(t1 - t0, n_src, 2C) gains at ticks t0..t1, computed every `step` ticks (on a grid shared by all
+        chunks) and linearly interpolated in between."""
+        if step == 1:
+            return np.stack([self.pole_weights(q) for q in qpos[t0:t1]])
+        last = len(qpos) - 1
+        knots = np.arange((t0 // step) * step, min(-(-t1 // step) * step, last) + 1, step)
+        if knots[-1] < min(t1 - 1, last):
+            knots = np.append(knots, last)
+        g = np.stack([self.pole_weights(qpos[k]) for k in knots])
+        ticks = np.arange(t0, t1)
+        i = np.clip(np.searchsorted(knots, ticks, side="right") - 1, 0, len(knots) - 2) if len(knots) > 1 else \
+            np.zeros(len(ticks), int)
+        if len(knots) == 1:
+            return np.repeat(g, len(ticks), 0)
+        w = ((ticks - knots[i]) / (knots[i + 1] - knots[i])).astype(np.float32)[:, None, None]
+        return (1 - w) * g[i] + w * g[i + 1]
+
     def _bipolar(self, pole_emg: np.ndarray) -> np.ndarray:
-        """(N, C) pole 1 minus pole 2 delayed by the conduction time between them."""
-        pole1, pole2 = pole_emg[:, 0::2], pole_emg[:, 1::2]
+        """(N, C) pole 1 minus pole 2: its propagating part delayed by the conduction time between the poles, its
+        in-phase part not."""
+        pole1, pole2, in_phase = pole_emg[:, 0::3], pole_emg[:, 1::3], pole_emg[:, 2::3]
         t = np.arange(len(pole_emg))
-        return np.stack([pole1[:, c] - np.interp(t - self.pole_delay[c] * self.fs, t, pole2[:, c], left=0.0)
+        return np.stack([pole1[:, c] - in_phase[:, c]
+                         - np.interp(t - self.pole_delay[c] * self.fs, t, pole2[:, c], left=0.0)
                          for c in range(len(self.poles))], axis=1)
