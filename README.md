@@ -16,7 +16,7 @@ pip install -e ".[dev]"             # + tests, linting, type checking
 ```python
 import myogen as mg
 
-motion = mg.example_motion(duration=4.0)              # or mg.HandMotion.load("motion.h5")
+motion = mg.example_motion(duration=4.0)              # or mg.HandMotion.load("motion.h5", mg.read_motion_file)
 recording = mg.Simulator(mg.Electrodes.myo()).run(motion)
 recording.save("emg.h5")
 ```

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, fields
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -24,6 +25,10 @@ REST_POSTURE = {
 DIP_PER_PIP = 0.725         # DIP-PIP coupling of the fingers (the DIP cannot be moved on its own)
 
 log = logging.getLogger(__name__)
+
+# path -> the motion in HandMotion's format: a HandMotion, or its fields {angles: (T, 23) radians in HAND_JOINTS order,
+# fs: Hz, optional elbow: (T,) radians, rest: (T,) bool, filled: joint names}.
+MotionLoader = Callable[[Path], "HandMotion | Mapping[str, Any]"]
 
 
 @dataclass
@@ -68,28 +73,23 @@ class HandMotion:
                           None if self.rest is None else self.rest[nearest], self.filled)
 
     @classmethod
-    def load(cls, path: str | Path, adapter: JointAdapter | None = None) -> HandMotion:
-        """Read a motion file (format: module docstring); `adapter` maps joint names other than the model's."""
-        path = _checked(path)
+    def load(cls, path: str | Path, loader: MotionLoader) -> HandMotion:
+        """The motion loader(path) reads, in HandMotion's format (see MotionLoader): any file or folder, in any
+        format, as long as the loader returns model joint angles. read_motion_file reads myogen's own files."""
+        path = Path(path)
         if not path.exists():
-            raise FileNotFoundError(f"motion file {path} not found")
-        if path.suffix == ".npz":
-            with np.load(path, allow_pickle=False) as f:
-                data = {k: f[k] for k in f.files}
-        else:
-            import h5py
-            with h5py.File(path, "r") as f:
-                data = {k: f[k][()] for k in ("angles", "joint_names", "rest", "fs") if k in f}
-                data.update({k: v for k, v in f.attrs.items() if k in ("fs", "joint_names")})
-        for key in ("angles", "joint_names", "fs"):
-            if key not in data:
-                raise ValueError(f"{path}: no '{key}' (see the motion file format in myogen.motion)")
-        names = [n.decode() if isinstance(n, bytes) else str(n) for n in np.asarray(data["joint_names"]).ravel()]
-        angles = np.asarray(data["angles"], float)
-        if angles.ndim != 2 or angles.shape[1] != len(names):
-            raise ValueError(f"{path}: angles {angles.shape} do not match {len(names)} joint_names")
-        return (adapter or JointAdapter())(dict(zip(names, angles.T)), float(np.asarray(data["fs"])),
-                                           rest=data.get("rest"))
+            raise FileNotFoundError(f"motion {path} not found")
+        out = loader(path)
+        if isinstance(out, HandMotion):
+            return out
+        if not isinstance(out, Mapping):
+            raise TypeError(f"the loader must return a HandMotion or a mapping of its fields, got {type(out).__name__}")
+        names = {f.name for f in fields(cls)}
+        missing, unknown = {"angles", "fs"} - set(out), sorted(set(out) - names)
+        if missing or unknown:
+            raise ValueError(f"{path}: the loader returned {sorted(out)}; HandMotion needs 'angles' and 'fs'"
+                             + (f" and has no {unknown}" if unknown else "") + f" (fields: {sorted(names)})")
+        return cls(**out)
 
     def save(self, path: str | Path) -> Path:
         path = _checked(path)
@@ -106,6 +106,32 @@ class HandMotion:
                     f.create_dataset(k, data=v)
                 f.attrs["fs"], f.attrs["joint_names"] = self.fs, names
         return path
+
+
+def read_motion_file(path: str | Path, adapter: JointAdapter | None = None) -> HandMotion:
+    """A HandMotion loader for myogen's own motion files (.h5 / .npz, as HandMotion.save writes them: angles
+    (T, J), joint_names (J,), fs, optional rest); `adapter` maps joint names other than the model's (use
+    functools.partial to pass one to HandMotion.load)."""
+    path = _checked(path)
+    if not path.exists():
+        raise FileNotFoundError(f"motion file {path} not found")
+    if path.suffix == ".npz":
+        with np.load(path, allow_pickle=False) as f:
+            data = {k: f[k] for k in f.files}
+    else:
+        import h5py
+        with h5py.File(path, "r") as f:
+            data = {k: f[k][()] for k in ("angles", "joint_names", "rest", "fs") if k in f}
+            data.update({k: v for k, v in f.attrs.items() if k in ("fs", "joint_names")})
+    for key in ("angles", "joint_names", "fs"):
+        if key not in data:
+            raise ValueError(f"{path}: no '{key}' (see the motion file format in myogen.motion)")
+    names = [n.decode() if isinstance(n, bytes) else str(n) for n in np.asarray(data["joint_names"]).ravel()]
+    angles = np.asarray(data["angles"], float)
+    if angles.ndim != 2 or angles.shape[1] != len(names):
+        raise ValueError(f"{path}: angles {angles.shape} do not match {len(names)} joint_names")
+    return (adapter or JointAdapter())(dict(zip(names, angles.T)), float(np.asarray(data["fs"])),
+                                       rest=data.get("rest"))
 
 
 class JointAdapter:

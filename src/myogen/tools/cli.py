@@ -56,7 +56,7 @@ def simulate(a: argparse.Namespace) -> None:
     from ..simulator import Simulator
     subject = Subject.from_dict(yaml.safe_load(open(a.subject))) if a.subject else None
     sim = Simulator(Electrodes.load(a.electrodes), subject=subject)
-    print(f"wrote {sim.run(a.motion).save(a.out)}")
+    print(f"wrote {sim.run(a.motion, progress=not a.quiet).save(a.out)}")
 
 
 def replay(a: argparse.Namespace) -> None:

@@ -1,23 +1,33 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
 import logging
 from collections.abc import Callable, Sequence
+from concurrent.futures import as_completed
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from scipy import signal
 
+from ..parallel import n_workers, process_pool
+from ..progress import Counter, progress_bars
+
 if TYPE_CHECKING:
+    from rich.progress import Progress
+
     from ..inputs.electrodes import Electrodes
     from ..inputs.motion import HandMotion
+    from ..inputs.subject import Subject
+    from ..params import SimParams
     from ..simulator import CleanRun, Simulator
 
 Stats = dict[str, Any]       # statistic -> value (None where a recording has none)
 
 ENV_FS = 100.0               # Hz, envelope rate of every statistic
 RMS_WINDOW = 0.15            # s, moving RMS for devices that output raw EMG
+BISECT_STEPS = 24            # evaluations per fitted setting and round
 
 log = logging.getLogger(__name__)
 
@@ -89,31 +99,44 @@ class Calibration:
 
 def calibrate(simulator: Simulator, motions: Sequence[HandMotion], real_emgs: Sequence[np.ndarray],
               rests: Sequence[np.ndarray | None] | None = None, rounds: int = 3, fit_rotation: bool = False,
-              rotation_steps: int = 16) -> Calibration:
+              rotation_steps: int = 16, workers: int | None = None, progress: bool = True) -> Calibration:
     """Fit the device settings of simulator.electrodes to real recordings of the same motions.
 
     motions: HandMotions (what the hand did during each recording); real_emgs: (N, C) device outputs at the
     device's rate, aligned with the motions; rests: optional (N,) bool masks of rest (else motion.rest);
-    fit_rotation: also fit the armband rotation, trying rotation_steps rotations around the forearm.
+    fit_rotation: also fit the armband rotation, trying rotation_steps rotations around the forearm;
+    workers: processes simulating the motions and trying the rotations (default: up to the CPU count; 1 = in this
+    process); progress: show progress bars.
     """
+    with progress_bars(progress) as bars:
+        return _calibrate(simulator, motions, real_emgs, rests, rounds, fit_rotation, rotation_steps, workers,
+                          progress, bars)
+
+
+def _calibrate(simulator: Simulator, motions: Sequence[HandMotion], real_emgs: Sequence[np.ndarray],
+               rests: Sequence[np.ndarray | None] | None, rounds: int, fit_rotation: bool, rotation_steps: int,
+               workers: int | None, progress: bool, bars: Progress) -> Calibration:
     device = simulator.electrodes.device
     fs = simulator.electrodes.fs_out
-    runs = [simulator.simulate_clean(m) for m in motions]
+    runs = simulator.simulate_clean(list(motions), workers=workers, progress=progress)
     rests = rests or [m.rest if m.rest is not None else None for m in motions]
     real = _pooled([statistics(x, fs, device, r) for x, r in zip(real_emgs, rests)])
     rotation, match_before = 0.0, _match(simulator, runs, real_emgs)
     if fit_rotation:
-        scores = {}
-        for k in range(rotation_steps):
-            delta = 360.0 * k / rotation_steps
-            candidate = simulator.with_electrodes(rotated(simulator.electrodes, delta))
-            scores[delta] = _match(candidate, [candidate.regenerate(run) for run in runs], real_emgs)
-            log.info(f"rotation {delta:6.1f} deg: channel correlation {scores[delta]:.3f}")
+        search = Counter(bars, "armband rotation", rotation_steps, "rotations")
+        scores = _rotation_scores(simulator, runs, real_emgs, [360.0 * k / rotation_steps
+                                                                for k in range(rotation_steps)], workers, search)
         rotation = max(scores, key=lambda delta: scores[delta])
         simulator = simulator.with_electrodes(rotated(simulator.electrodes, rotation))
         runs = [simulator.regenerate(run) for run in runs]
+        search.close()
+
+    # Every device setting tried: before and after, and each step of each bisection.
+    n_fits = (real["rest_floor"] is not None) + 1 + (device == "otto_bock")
+    fit = Counter(bars, "device settings", 2 + rounds * n_fits * BISECT_STEPS, "settings")
 
     def simulated(electrodes: Electrodes) -> Stats:
+        fit.advance()
         return _pooled([
             statistics(simulator.record(run, electrodes).emg, fs, device, r)
                     for run, r in zip(runs, rests)
@@ -132,6 +155,7 @@ def calibrate(simulator: Simulator, motions: Sequence[HandMotion], real_emgs: Se
             fitted.frontend.smooth_hz = _bisect(
                 lambda v: -simulated(_with(fitted, smooth_hz=v))["autocorr_50ms"], -real["autocorr_50ms"], 0.5, 20.0)
     after = simulated(fitted)
+    fit.close()
     names = ["gain", "noise_uv"] + (["smooth_hz"] if device == "otto_bock" else [])
     fitted_params = {n: (_get(start, n), _get(fitted, n)) for n in names}
     if fit_rotation:
@@ -148,6 +172,56 @@ def rotated(electrodes: Electrodes, delta_deg: float) -> Electrodes:
     for e in ring:
         e.angle_deg = (e.angle_deg + delta_deg + 180.0) % 360.0 - 180.0
     return out
+
+
+def _rotation_scores(simulator: Simulator, runs: Sequence[CleanRun], real_emgs: Sequence[np.ndarray],
+                     rotations: list[float], workers: int | None, search: Counter) -> dict[float, float]:
+    """rotation -> channel correlation of the runs re-generated with the electrodes rotated by it, in `workers`
+    processes (each re-runs only the EMG step: the runs' muscle activity is shared)."""
+    def done(delta: float, score: float) -> None:
+        log.info(f"rotation {delta:6.1f} deg: channel correlation {score:.3f}")
+        search.advance()
+
+    workers = n_workers(len(rotations), workers)
+    scores = {}
+    if workers <= 1:
+        for delta in rotations:
+            scores[delta] = _rotation_score(simulator, runs, real_emgs, delta)
+            done(delta, scores[delta])
+        return scores
+    light = [dataclasses.replace(run, emg=run.emg[:0]) for run in runs]    # the workers only need the activity
+    with process_pool(workers, _worker_init, (simulator.electrodes, simulator.subject, simulator.params, light,
+                                              list(real_emgs))) as pool:
+        futures = {pool.submit(_worker_score, delta): delta for delta in rotations}
+        try:
+            for f in as_completed(futures):
+                scores[futures[f]] = f.result()
+                done(futures[f], scores[futures[f]])
+        except BaseException:
+            pool.shutdown(wait=False, cancel_futures=True)
+            raise
+    return {delta: scores[delta] for delta in rotations}
+
+
+def _rotation_score(simulator: Simulator, runs: Sequence[CleanRun], real_emgs: Sequence[np.ndarray],
+                    delta: float) -> float:
+    candidate = simulator.with_electrodes(rotated(simulator.electrodes, delta))
+    return _match(candidate, [candidate.regenerate(run) for run in runs], real_emgs)
+
+
+_worker: tuple[Simulator, list[CleanRun], list[np.ndarray]] | None = None    # a rotation worker's inputs
+
+
+def _worker_init(electrodes: Electrodes, subject: Subject, params: SimParams, runs: list[CleanRun],
+                 real_emgs: list[np.ndarray]) -> None:
+    from ..simulator import Simulator
+    global _worker
+    _worker = (Simulator(electrodes, subject, params), runs, real_emgs)
+
+
+def _worker_score(delta: float) -> float:
+    assert _worker is not None
+    return _rotation_score(*_worker, delta)
 
 
 def _match(simulator: Simulator, runs: Sequence[CleanRun], real_emgs: Sequence[np.ndarray]) -> float:
@@ -168,7 +242,8 @@ def _get(electrodes: Electrodes, name: str) -> float:
     return electrodes.frontend.smooth_hz if name == "smooth_hz" else getattr(electrodes, name)
 
 
-def _bisect(f: Callable[[float], float], target: float, lo: float, hi: float, iterations: int = 24) -> float:
+def _bisect(f: Callable[[float], float], target: float, lo: float, hi: float, iterations: int = BISECT_STEPS
+            ) -> float:
     """x in [lo, hi] (log scale) with f(x) ~ target, for an increasing f."""
     lo, hi = np.log(lo), np.log(hi)
     for _ in range(iterations):

@@ -209,9 +209,11 @@ def effort(model: ForearmModel, q_ref: np.ndarray, q_rest: np.ndarray, subject: 
            params: EffortParams | None = None, fs: float = 100.0) -> tuple[np.ndarray, np.ndarray]:
     """(co-activation (T, nu), grip load (T,)). People drive their muscles harder than the mechanical minimum.
 
-    A joint is engaged while it moves or is held away from the relaxed posture. Each muscle gets the effort of the
-    engaged joints it acts on, in proportion to its moment arm relative to the joint's strongest muscle. A relaxed
-    hand is nearly electrically silent, as in real recordings.
+    A joint is engaged while it moves or is held away from the relaxed posture, in the direction it moves or is held.
+    Each muscle gets the effort of the engaged joints it acts on, in proportion to its moment arm relative to the
+    joint's strongest muscle: in full if it pulls the joint that way (agonist), a fraction
+    (Subject.antagonist_ratio) if it pulls the other way. A relaxed hand is nearly electrically silent, as in real
+    recordings.
     """
     p = params or EffortParams()
     engaged, moving = joint_engagement(model, q_ref, q_rest, p, fs)
@@ -220,35 +222,42 @@ def effort(model: ForearmModel, q_ref: np.ndarray, q_rest: np.ndarray, subject: 
     level = _episodes(rng, len(q_ref), fs, base=subject.cocontraction, high=p.cocontraction_peak,
                       p_episode=p.cocontraction_episode_prob, duration_s=p.episode_s,
                       tau=p.episode_smoothing_s) + subject.hold_tone
-    co_activation = (level[:, None] * per_muscle(engaged, involvement)
-                     + subject.move_cocontraction * per_muscle(moving, involvement))
+    r = subject.antagonist_ratio
+    co_activation = (level[:, None] * per_muscle(engaged, involvement, r)
+                     + subject.move_cocontraction * per_muscle(moving, involvement, r))
     return co_activation, grip_load(model, q_ref, subject, rng, p, fs)
 
 
 def joint_engagement(model: ForearmModel, q_ref: np.ndarray, q_rest: np.ndarray, p: EffortParams, fs: float
                      ) -> tuple[np.ndarray, np.ndarray]:
-    """(engaged (T, nv) in [0, 1], moving (T, nv)): how far each joint is held from rest and how fast it moves."""
+    """(engaged (T, nv) in [-1, 1], moving (T, nv)): how far each joint is held from rest and how fast it moves,
+    signed by direction (the sign of the joint angle change it calls for)."""
     span = np.maximum(model.qmax - model.qmin, 1e-6)
     u, u_rest = q_ref / span, q_rest / span                     # joint angles as fractions of their range
     lp = signal.butter(2, p.speed_lowpass_hz, fs=fs, output="sos")
-    speed = signal.sosfiltfilt(lp, np.abs(np.gradient(u, axis=0)) * fs, axis=0)
-    moving = np.clip(speed - p.speed_deadzone, 0, p.speed_max)
-    away = np.clip(np.abs(u - u_rest) - p.posture_deadzone, 0, None) / p.posture_engaged
-    engaged = np.clip(signal.sosfiltfilt(lp, np.clip(away + moving / p.speed_engaged, 0, 1), axis=0), 0, 1)
+    velocity = np.gradient(u, axis=0) * fs
+    speed = signal.sosfiltfilt(lp, np.abs(velocity), axis=0)
+    moving = np.sign(signal.sosfiltfilt(lp, velocity, axis=0)) * np.clip(speed - p.speed_deadzone, 0, p.speed_max)
+    away = np.sign(u - u_rest) * np.clip(np.abs(u - u_rest) - p.posture_deadzone, 0, None) / p.posture_engaged
+    engaged = np.clip(signal.sosfiltfilt(lp, np.clip(away + moving / p.speed_engaged, -1, 1), axis=0), -1, 1)
     return engaged, moving
 
 
 def muscle_involvement(model: ForearmModel, q_rest: np.ndarray) -> np.ndarray:
-    """(nu, nv) each muscle's moment arm relative to the strongest muscle of each joint (one dof per joint)."""
-    R = np.abs(model.moment_arms(q_rest))
-    return R / np.maximum(R.max(0), 1e-9)
+    """(nu, nv) each muscle's moment arm relative to the strongest muscle of each joint (one dof per joint), signed
+    by the direction the muscle turns the joint (positive: towards larger angles)."""
+    R = -model.moment_arms(q_rest)                  # muscles pull: their force is negative in MuJoCo
+    return R / np.maximum(np.abs(R).max(0), 1e-9)
 
 
-def per_muscle(joint_level: np.ndarray, involvement: np.ndarray) -> np.ndarray:
-    """(T, nu) the largest level among the joints each muscle acts on, weighted by its involvement."""
+def per_muscle(joint_level: np.ndarray, involvement: np.ndarray, antagonist_ratio: float = 1.0) -> np.ndarray:
+    """(T, nu) the largest level among the joints each muscle acts on, weighted by its involvement: in full for the
+    muscles that turn the joint in the level's direction, antagonist_ratio for the others (1: direction ignored)."""
     out = np.zeros((len(joint_level), involvement.shape[0]))
     for j in range(involvement.shape[1]):
-        out = np.maximum(out, joint_level[:, j:j + 1] * involvement[:, j])
+        agonist = np.sign(joint_level[:, j:j + 1]) * np.sign(involvement[:, j]) > 0
+        weight = np.abs(involvement[:, j]) * np.where(agonist, 1.0, antagonist_ratio)
+        out = np.maximum(out, np.abs(joint_level[:, j:j + 1]) * weight)
     return out
 
 

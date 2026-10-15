@@ -2,18 +2,22 @@ from __future__ import annotations
 
 import copy
 import logging
+import queue
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from concurrent.futures import FIRST_COMPLETED, Future, wait
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar, overload
 
 import numpy as np
 
 from .inputs.electrodes import Electrodes
-from .inputs.motion import REST_POSTURE, HandMotion
+from .inputs.motion import REST_POSTURE, HandMotion, read_motion_file
 from .inputs.subject import Subject
+from .parallel import mp_context, n_workers, process_pool
 from .params import SimParams
+from .progress import ProgressFn, RunProgress
 from .recording import Recording
 from .simulation import acquisition
 from .simulation.emg import EMGModel
@@ -21,6 +25,9 @@ from .simulation.muscle_activity import MuscleActivity, MuscleController, effort
 from .simulation.musculoskeletal import HAND_JOINTS, ForearmModel
 
 log = logging.getLogger(__name__)
+
+MotionLike = HandMotion | str | Path
+R = TypeVar("R")
 
 
 @dataclass
@@ -52,15 +59,44 @@ class Simulator:
         other.emg = EMGModel(self.model, self.subject, electrodes, self.params.emg)
         return other
 
-    def run(self, motion: HandMotion | str | Path, on_tick: Callable[[int, int], None] | None = None) -> Recording:
-        """Simulate a HandMotion (or a motion file). Returns a Recording."""
-        return self.record(self.simulate_clean(motion, on_tick))
+    @overload
+    def run(self, motion: MotionLike, *, workers: int | None = ..., progress: bool = ...  # type: ignore[overload-overlap]
+            ) -> Recording: ...
+    @overload
+    def run(self, motion: Sequence[MotionLike], *, workers: int | None = ..., progress: bool = ...
+            ) -> list[Recording]: ...
 
-    def simulate_clean(self, motion: HandMotion | str | Path,
-                       on_tick: Callable[[int, int], None] | None = None) -> CleanRun:
+    def run(self, motion: MotionLike | Sequence[MotionLike], *, workers: int | None = None,
+            progress: bool = True) -> Recording | list[Recording]:
+        """Simulate a HandMotion (or a myogen motion file: read_motion_file). Returns a Recording.
+
+        A list of motions returns a list of Recordings in the same order, simulated in `workers` parallel processes
+        (default: one per motion, up to the CPU count; 1 = in this process). Each result is the same as running its
+        motion alone. progress: show progress bars."""
+        return self._map(Simulator._run_one, motion, workers, progress)
+
+    @overload
+    def simulate_clean(self, motion: MotionLike, *, workers: int | None = ...,  # type: ignore[overload-overlap]
+                       progress: bool = ...) -> CleanRun: ...
+    @overload
+    def simulate_clean(self, motion: Sequence[MotionLike], *, workers: int | None = ..., progress: bool = ...
+                       ) -> list[CleanRun]: ...
+
+    def simulate_clean(self, motion: MotionLike | Sequence[MotionLike], *, workers: int | None = None,
+                       progress: bool = False) -> CleanRun | list[CleanRun]:
         """The expensive part: movement -> muscle activity -> clean EMG at the electrodes. Returns a CleanRun, which
-        record() turns into a Recording (calibrate() records one CleanRun with many device settings)."""
-        motion = motion if isinstance(motion, HandMotion) else HandMotion.load(motion)
+        record() turns into a Recording (calibrate() records one CleanRun with many device settings). A list of
+        motions runs as in run()."""
+        return self._map(Simulator._clean_one, motion, workers, progress)
+
+    def _run_one(self, motion: MotionLike, on_progress: ProgressFn | None = None) -> Recording:
+        return self.record(self._clean_one(motion, on_progress))
+
+    def _clean_one(self, motion: MotionLike, on_progress: ProgressFn | None = None) -> CleanRun:
+        """simulate_clean() of one motion; on_progress(stage, done, total) is called as it goes."""
+        report = (lambda stage: None) if on_progress is None else \
+            (lambda stage: lambda k, n: on_progress(stage, k + 1 if stage == "control" else k, n))
+        motion = motion if isinstance(motion, HandMotion) else HandMotion.load(motion, read_motion_file)
         sub, ctrl = self.subject, self.params.control
         effort_rng = np.random.default_rng(np.random.SeedSequence([sub.seed, 0]))
         t0 = time.time()
@@ -74,14 +110,63 @@ class Simulator:
         # Muscle activity that reproduces it.
         controller = MuscleController(self.model, sub.recruitment_cost, ctrl)
         activity = controller.track(q_ref, grip_torque, self.model.support(sub), fibre_rest, effort=co_activation,
-                                    on_tick=on_tick)
+                                    on_tick=report("control"))
         start = int(ctrl.warmup_s * ctrl.fs)
         activity = activity[start:]
         # The EMG it produces at the electrodes.
-        run = CleanRun(activity, self.emg.generate(activity, self._emg_rng()),
+        run = CleanRun(activity, self.emg.generate(activity, self._emg_rng(), on_tick=report("emg")),
                        self._labels(activity, q_ref, grip, start), list(motion.filled))
         log.info(f"done in {time.time() - t0:.0f} s")
         return run
+
+    def _map(self, simulate: Callable[[Simulator, MotionLike, ProgressFn | None], R],
+             motions: MotionLike | Sequence[MotionLike], workers: int | None, progress: bool) -> R | list[R]:
+        """simulate(self, motion, on_progress) for one motion, or for each of a list in worker processes."""
+        single = isinstance(motions, HandMotion | str | Path)
+        batch: list[MotionLike] = [motions] if single else list(motions)  # type: ignore[list-item, arg-type]
+        names = [Path(m).stem if isinstance(m, str | Path) else "motion" if single else f"motion {i}"
+                 for i, m in enumerate(batch)]
+        workers = n_workers(len(batch), workers)
+        with RunProgress(names, enabled=progress) as bars:
+            if workers <= 1:
+                results = []
+                for i, m in enumerate(batch):
+                    results.append(simulate(self, m, bars.reporter(i) if progress else None))
+                    bars.finished(i)
+            else:
+                results = self._map_parallel(simulate, batch, workers, bars if progress else None)
+        return results[0] if single else results
+
+    def _map_parallel(self, simulate: Callable[[Simulator, MotionLike, ProgressFn | None], R],
+                      motions: list[MotionLike], workers: int, bars: RunProgress | None) -> list[R]:
+        """Each worker process builds its own Simulator (a pickled one is ~80 MB) and reports its progress through a
+        queue the bars are drawn from here."""
+        ticks = mp_context().Queue() if bars is not None else None
+        results: list[Any] = [None] * len(motions)
+
+        def drain() -> None:
+            while ticks is not None and bars is not None:
+                try:
+                    bars.update(*ticks.get_nowait())
+                except queue.Empty:
+                    return
+
+        with process_pool(workers, _worker_init, (self.electrodes, self.subject, self.params, ticks)) as pool:
+            futures: dict[Future[R], int] = {pool.submit(_worker_simulate, simulate, i, m): i
+                                             for i, m in enumerate(motions)}
+            pending: set[Future[R]] = set(futures)
+            try:
+                while pending:
+                    done, pending = wait(pending, timeout=0.1, return_when=FIRST_COMPLETED)
+                    drain()
+                    for f in done:
+                        results[futures[f]] = f.result()
+                        if bars is not None:
+                            bars.finished(futures[f])
+            except BaseException:
+                pool.shutdown(wait=False, cancel_futures=True)
+                raise
+        return results
 
     def regenerate(self, run: CleanRun) -> CleanRun:
         """The CleanRun of the same muscle activity at this simulator's electrodes (re-runs only the EMG step)."""
@@ -164,3 +249,29 @@ class Simulator:
         if beyond:
             log.warning(f"angles beyond the model's joint limits (clipped): {', '.join(beyond)}")
         return np.clip(hand, lo, hi)
+
+
+# -- worker processes for batches of motions ---------------------------------------------------------------------
+
+_worker: tuple[Simulator, Any] | None = None      # this worker's Simulator and progress queue
+
+
+def _worker_init(electrodes: Electrodes, subject: Subject, params: SimParams, ticks: Any) -> None:
+    global _worker
+    _worker = (Simulator(electrodes, subject, params), ticks)
+
+
+def _worker_simulate(simulate: Callable[[Simulator, MotionLike, ProgressFn | None], R], i: int,
+                     motion: MotionLike) -> R:
+    assert _worker is not None
+    sim, ticks = _worker
+    if ticks is None:
+        return simulate(sim, motion, None)
+    last: dict[str, int] = {}
+
+    def report(stage: str, done: int, total: int) -> None:
+        step = max(1, total // 100)                 # ~100 updates per stage through the queue
+        if done == total or done - last.get(stage, -step) >= step:
+            last[stage] = done
+            ticks.put((i, stage, done, total))
+    return simulate(sim, motion, report)

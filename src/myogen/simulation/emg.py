@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING, overload
 
 import mujoco
@@ -44,10 +45,12 @@ class EMGModel:
         norm = np.exp(-(self.fat + p.superficial_depth_m) / self.decay) * self.n_sources / 2
         self.source_amp = np.repeat(subject.muscle_amplitudes(model.extrinsic), self.n_sources) / norm
 
-    def generate(self, activity: MuscleActivity, rng: np.random.Generator) -> np.ndarray:
-        """(T * upsample, C) bipolar EMG in mV at self.fs, from the drive and joint angles at the control rate."""
+    def generate(self, activity: MuscleActivity, rng: np.random.Generator,
+                 on_tick: Callable[[int, int], None] | None = None) -> np.ndarray:
+        """(T * upsample, C) bipolar EMG in mV at self.fs, from the drive and joint angles at the control rate.
+        on_tick(k, T) is called after every chunk of ticks."""
         envelope = np.clip(activity.drive, 0, 1) ** self.sub.amp_exponent     # how strongly each muscle fires
-        pole_emg = self._pole_signals(envelope, activity.qpos, activity.fs, rng)   # monopolar, every pole
+        pole_emg = self._pole_signals(envelope, activity.qpos, activity.fs, rng, on_tick=on_tick)  # every pole
         emg = self._bipolar(pole_emg)
         scale = self.sub.gain_mv * self.params.noise_to_mv * self.params.bipolar_scale
         return (emg * scale).astype(np.float32)
@@ -102,7 +105,7 @@ class EMGModel:
     # -- signals -----------------------------------------------------------------------------------------------
 
     def _pole_signals(self, envelope: np.ndarray, qpos: np.ndarray, fs_ctrl: float, rng: np.random.Generator,
-                      chunk_ticks: int = 200) -> np.ndarray:
+                      chunk_ticks: int = 200, on_tick: Callable[[int, int], None] | None = None) -> np.ndarray:
         """(T * upsample, 2 C) monopolar signal at every pole: each source fires band-limited noise scaled by its
         muscle's envelope, and each pole sums the sources weighted by their gains at that tick's posture."""
         n_ticks, n_muscles = envelope.shape
@@ -127,6 +130,8 @@ class EMGModel:
             src = src.astype(np.float32)
             gain = np.stack([self.gains(q) for q in qpos[t0:t1]])                          # (ticks, n_src, 2C)
             pole_emg[t0 * upsample:t1 * upsample] = np.einsum("tus,tsp->tup", src, gain).reshape(n, n_poles)
+            if on_tick is not None:
+                on_tick(t1, n_ticks)
         return pole_emg
 
     def _bipolar(self, pole_emg: np.ndarray) -> np.ndarray:
