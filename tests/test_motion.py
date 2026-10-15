@@ -48,9 +48,26 @@ def test_validation():
 def test_file_roundtrip(tmp_path, suffix):
     m = mg.example_motion(2.0, fs=50)
     m.elbow = np.linspace(1.0, 1.2, len(m.angles))
-    back = mg.HandMotion.load(m.save(tmp_path / f"m{suffix}"))
+    back = mg.HandMotion.load(m.save(tmp_path / f"m{suffix}"), mg.read_motion_file)
     assert back.fs == 50 and np.allclose(back.angles, m.angles) and np.allclose(back.elbow, m.elbow)
     assert np.array_equal(back.rest, m.rest) and back.filled == ()
+
+
+def test_custom_loader(tmp_path):
+    m = mg.example_motion(2.0, fs=50)
+    path = tmp_path / "trial.csv"
+    np.savetxt(path, m.angles, delimiter=",")
+    read = lambda p: {"angles": np.loadtxt(p, delimiter=","), "fs": 50.0}
+    assert np.allclose(mg.HandMotion.load(path, read).angles, m.angles)
+    assert mg.HandMotion.load(path, lambda p: m) is m                    # a loader may return a HandMotion
+    with pytest.raises(ValueError, match="needs 'angles' and 'fs'"):
+        mg.HandMotion.load(path, lambda p: {"angles": m.angles})
+    with pytest.raises(ValueError, match="has no"):
+        mg.HandMotion.load(path, lambda p: {"angles": m.angles, "fs": 50.0, "glove": 1})
+    with pytest.raises(TypeError):
+        mg.HandMotion.load(path, lambda p: m.angles)
+    with pytest.raises(FileNotFoundError):
+        mg.HandMotion.load(tmp_path / "missing.csv", read)
 
 
 def test_resampling_keeps_duration():

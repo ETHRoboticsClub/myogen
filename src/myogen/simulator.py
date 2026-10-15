@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import copy
 import logging
-import multiprocessing
-import os
 import queue
 import time
 from collections.abc import Callable, Sequence
-from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, Future, wait
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeVar, overload
@@ -15,8 +13,9 @@ from typing import Any, TypeVar, overload
 import numpy as np
 
 from .inputs.electrodes import Electrodes
-from .inputs.motion import REST_POSTURE, HandMotion
+from .inputs.motion import REST_POSTURE, HandMotion, read_motion_file
 from .inputs.subject import Subject
+from .parallel import mp_context, n_workers, process_pool
 from .params import SimParams
 from .progress import ProgressFn, RunProgress
 from .recording import Recording
@@ -69,7 +68,7 @@ class Simulator:
 
     def run(self, motion: MotionLike | Sequence[MotionLike], *, workers: int | None = None,
             progress: bool = True) -> Recording | list[Recording]:
-        """Simulate a HandMotion (or a motion file). Returns a Recording.
+        """Simulate a HandMotion (or a myogen motion file: read_motion_file). Returns a Recording.
 
         A list of motions returns a list of Recordings in the same order, simulated in `workers` parallel processes
         (default: one per motion, up to the CPU count; 1 = in this process). Each result is the same as running its
@@ -97,7 +96,7 @@ class Simulator:
         """simulate_clean() of one motion; on_progress(stage, done, total) is called as it goes."""
         report = (lambda stage: None) if on_progress is None else \
             (lambda stage: lambda k, n: on_progress(stage, k + 1 if stage == "control" else k, n))
-        motion = motion if isinstance(motion, HandMotion) else HandMotion.load(motion)
+        motion = motion if isinstance(motion, HandMotion) else HandMotion.load(motion, read_motion_file)
         sub, ctrl = self.subject, self.params.control
         effort_rng = np.random.default_rng(np.random.SeedSequence([sub.seed, 0]))
         t0 = time.time()
@@ -127,7 +126,7 @@ class Simulator:
         batch: list[MotionLike] = [motions] if single else list(motions)  # type: ignore[list-item, arg-type]
         names = [Path(m).stem if isinstance(m, str | Path) else "motion" if single else f"motion {i}"
                  for i, m in enumerate(batch)]
-        workers = min(len(batch), workers or os.cpu_count() or 1)
+        workers = n_workers(len(batch), workers)
         with RunProgress(names, enabled=progress) as bars:
             if workers <= 1:
                 results = []
@@ -142,8 +141,7 @@ class Simulator:
                       motions: list[MotionLike], workers: int, bars: RunProgress | None) -> list[R]:
         """Each worker process builds its own Simulator (a pickled one is ~80 MB) and reports its progress through a
         queue the bars are drawn from here."""
-        ctx = multiprocessing.get_context("spawn")    # fork is unsafe with MuJoCo / BLAS threads in the parent
-        ticks = ctx.Queue() if bars is not None else None
+        ticks = mp_context().Queue() if bars is not None else None
         results: list[Any] = [None] * len(motions)
 
         def drain() -> None:
@@ -153,8 +151,7 @@ class Simulator:
                 except queue.Empty:
                     return
 
-        with ProcessPoolExecutor(workers, mp_context=ctx, initializer=_worker_init,
-                                 initargs=(self.electrodes, self.subject, self.params, ticks)) as pool:
+        with process_pool(workers, _worker_init, (self.electrodes, self.subject, self.params, ticks)) as pool:
             futures: dict[Future[R], int] = {pool.submit(_worker_simulate, simulate, i, m): i
                                              for i, m in enumerate(motions)}
             pending: set[Future[R]] = set(futures)

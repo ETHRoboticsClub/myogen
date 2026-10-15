@@ -9,7 +9,7 @@ except PackageNotFoundError:
     __version__ = "unknown"
 
 from .inputs.electrodes import Electrode, Electrodes, Frontend
-from .inputs.motion import HandMotion, JointAdapter, example_motion
+from .inputs.motion import HandMotion, JointAdapter, MotionLoader, example_motion, read_motion_file
 from .inputs.subject import Subject
 from .params import SimParams
 from .recording import Recording
@@ -24,4 +24,5 @@ def replay(recording: Recording | str | Path, port: int = 8080, emg_window: floa
 
 
 __all__ = ["Calibration", "calibrate", "compare", "Electrode", "Electrodes", "Frontend", "HandMotion", "JointAdapter",
-           "Recording", "SimParams", "Simulator", "Subject", "example_motion", "replay"]
+           "MotionLoader", "Recording", "SimParams", "Simulator", "Subject", "example_motion", "read_motion_file",
+           "replay"]
