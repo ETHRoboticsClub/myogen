@@ -76,15 +76,17 @@ The atlas is one body; each `Subject` varies it (all off by default, `Subject.ra
 
 | field | effect | `Subject.random` |
 |---|---|---|
-| `muscularity` (0-1) | maximal force of every muscle 0.6-1.4x (mechanics: a stronger muscle needs less drive), unit action potentials ~ strength^0.5 (larger fibres) | 0.15-0.85 |
-| `muscle_strength` (per muscle) | force factor on top of muscularity | lognormal, σ 0.15 |
+| `strength` | maximal force of every muscle (mechanics: a stronger muscle needs less drive); unit action potentials ~ strength^0.5 (larger fibres) | 0.7-1.3 |
+| `muscle_strength` (per muscle) | force factor on top of `strength` | lognormal, σ 0.15 |
 | `muscle_size` (per muscle) | the muscle's spread around its centre at each level (area ~ size) and its number of motor units | lognormal, σ 0.15 |
 | `muscle_shift_deg` (per muscle) | turned around the forearm | normal, σ 5° |
 | `muscle_depth` (per muscle) | depth below the muscle surface scaled (< 1: nearer the skin) | lognormal, σ 0.1 |
 | `section_rotation_deg` | the whole section turned against the skin and the band | uniform ±15° |
+| `pronation_rad` | forearm rotation added to every motion (0 supinated, 1.5 palm down) | 0-1.5 |
 
-Builds: `Subject.build(muscularity, adiposity)` sets muscularity, the fat (2-9 mm) and the forearm girth from both;
-`Subject.preset(name)` for `slight`, `average` (the default subject), `athletic`, `strong`, `high_fat`. Per-muscle
+`Subject.build(strength, fat_mm)` sets both and derives the forearm radius: fat plus a muscle radius growing with
+sqrt(strength) (force ~ cross-sectional area). `Subject.preset(name)`: `reference` (the default subject, strength 1,
+5 mm fat), `low_strength` (0.7), `high_strength` (1.3), `low_fat` (2 mm), `high_fat` (9 mm). Per-muscle
 lists are in the model's muscle order (`ForearmModel().muscle_names`).
 
 ## Checks

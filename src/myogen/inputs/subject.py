@@ -5,13 +5,11 @@ from typing import Any
 
 import numpy as np
 
-MUSCULARITY_STRENGTH = (0.6, 1.4)   # maximal force factor at muscularity 0 and 1
-FIBRE_AMPLITUDE_EXPONENT = 0.5      # unit action potential amplitude ~ strength ** this (fibre diameter)
-FAT_MM = (2.0, 9.0)                 # subcutaneous fat at adiposity 0 and 1
-GIRTH_MM = (36.0, 7.0, 4.0)         # elbow skin radius: base + muscularity * a + adiposity * b
-# Builds (muscularity, adiposity) for Subject.preset.
-PRESETS = {"slight": (0.15, 0.2), "average": (0.5, 0.5), "athletic": (0.9, 0.2), "strong": (0.85, 0.6),
-           "high_fat": (0.4, 0.95)}
+FIBRE_AMPLITUDE_EXPONENT = 0.5      # unit action potential ~ strength ** this
+MUSCLE_RADIUS_MM = 36.5             # elbow radius under the fat at strength 1
+# (strength, fat_mm) for Subject.preset
+PRESETS = {"reference": (1.0, 5.0), "low_strength": (0.7, 5.0), "high_strength": (1.3, 5.0), "low_fat": (1.0, 2.0),
+           "high_fat": (1.0, 9.0)}
 
 
 @dataclass
@@ -25,19 +23,17 @@ class Subject:
     radial_fill: float = 0.885        # how far out the muscle bellies reach (fraction of radius minus fat)
     muscle_spread_mm: float = 4.0     # muscle width (transverse spread of the EMG sources); [2, 6]
     amputee: bool = False             # transradial: intrinsic hand muscles absent, extrinsic ones atrophied
-    # Muscle build and layout (atlas anatomy): the atlas body is muscularity 0.5, every muscle where the atlas has it.
-    muscularity: float = 0.5          # 0 slight .. 1 muscular: muscle strength 0.6-1.4x, unit size (EMG amplitude)
-    muscle_strength: list[float] | None = None   # (nu,) per-muscle force factors on top of muscularity (None = 1)
-    muscle_size: list[float] | None = None       # (nu,) per-muscle cross-section factors: its spread around its
-                                                 # centre and its share of motor units (None = 1)
-    muscle_shift_deg: list[float] | None = None  # (nu,) per-muscle shift around the forearm (None = 0)
-    muscle_depth: list[float] | None = None      # (nu,) per-muscle depth factors, < 1 nearer the skin (None = 1)
-    section_rotation_deg: float = 0.0  # the whole cross-section turned against the skin (and the band); [-15, 15]
+    # Muscles relative to the model and the atlas (per-muscle lists: (nu,), None = unchanged)
+    strength: float = 1.0             # maximal force of every muscle; [0.7, 1.3]
+    muscle_strength: list[float] | None = None
+    muscle_size: list[float] | None = None
+    muscle_shift_deg: list[float] | None = None
+    muscle_depth: list[float] | None = None
+    section_rotation_deg: float = 0.0  # [-15, 15]
     residual_length: float = 1.0      # fraction of the forearm left (amputees); [0.35, 0.8]
     # Posture
     elbow_angle_deg: float = 72.0     # used when the motion has no elbow angle; [40, 103]
-    pronation_rad: float = 0.0        # forearm rotation added to every motion (+ pronates; 0 supinated as the atlas
-                                      # body, ~0.8 thumb up, ~1.5 palm down); [0, 1.5]
+    pronation_rad: float = 0.0        # added to every motion; 0 supinated, 1.5 palm down; [0, 1.5]
     armrest: bool = True              # forearm resting on a support (as in NinaPro) or held up
     # World gravity direction (projected perpendicular to the forearm on an armrest).
     gravity: tuple[float, float, float] = (0.0, 0.0, -1.0)
@@ -69,30 +65,29 @@ class Subject:
         value = getattr(self, name)
         return np.full(n, default) if value is None else np.asarray(value, float)
 
-    def strength(self, n: int) -> np.ndarray:
-        """(n,) maximal force factor per muscle: muscularity times the per-muscle factors."""
-        return (MUSCULARITY_STRENGTH[0] + self.muscularity * (MUSCULARITY_STRENGTH[1] - MUSCULARITY_STRENGTH[0])) \
-            * self.per_muscle("muscle_strength", n, 1.0)
+    def muscle_forces(self, n: int) -> np.ndarray:
+        """(n,) maximal force factor per muscle: strength times the per-muscle factors."""
+        return self.strength * self.per_muscle("muscle_strength", n, 1.0)
 
     def muscle_amplitudes(self, extrinsic: np.ndarray) -> np.ndarray:
         """(nu,) EMG amplitude factor per muscle (muscle_amp, and the unit size of a stronger muscle: larger fibres,
         larger action potentials); amputees lose their intrinsic hand muscles."""
         amp = np.ones(len(extrinsic)) if self.muscle_amp is None else np.asarray(self.muscle_amp, float).copy()
-        amp *= self.strength(len(extrinsic)) ** FIBRE_AMPLITUDE_EXPONENT
+        amp *= self.muscle_forces(len(extrinsic)) ** FIBRE_AMPLITUDE_EXPONENT
         if self.amputee:
             amp[~np.asarray(extrinsic)] = 0.0
         return amp
 
     @classmethod
-    def build(cls, muscularity: float = 0.5, adiposity: float = 0.5, **fields: Any) -> Subject:
-        """A subject of this build (both 0-1): muscularity sets the muscle strength and size and, with adiposity,
-        the forearm's girth; adiposity the fat. Other fields as given."""
-        return cls(muscularity=muscularity, fat_mm=FAT_MM[0] + adiposity * (FAT_MM[1] - FAT_MM[0]),
-                   forearm_radius_mm=GIRTH_MM[0] + muscularity * GIRTH_MM[1] + adiposity * GIRTH_MM[2], **fields)
+    def build(cls, strength: float = 1.0, fat_mm: float = 5.0, **fields: Any) -> Subject:
+        """A subject of this strength and fat; the forearm radius follows: fat plus the muscle radius, which grows
+        with sqrt(strength) (force ~ cross-sectional area)."""
+        return cls(strength=strength, fat_mm=fat_mm, forearm_radius_mm=fat_mm + MUSCLE_RADIUS_MM * np.sqrt(strength),
+                   **fields)
 
     @classmethod
     def preset(cls, name: str, **fields: Any) -> Subject:
-        """A named build: one of PRESETS."""
+        """Subject.build with the (strength, fat_mm) of one of PRESETS."""
         if name not in PRESETS:
             raise ValueError(f"preset must be one of {' | '.join(PRESETS)}, got {name!r}")
         return cls.build(*PRESETS[name], **fields)
@@ -129,7 +124,7 @@ class Subject:
             antagonist_ratio=float(rng.uniform(0.1, 0.4)),   # drawn after the others: their draws stay as they were
             rest_tone=float(rng.uniform(0.02, 0.06)),
             # drawn last, so the draws above stay as they were
-            muscularity=float(rng.uniform(0.15, 0.85)),
+            strength=float(rng.uniform(0.7, 1.3)),
             muscle_strength=np.exp(rng.normal(0, 0.15, n_muscles)).tolist(),
             muscle_size=np.exp(rng.normal(0, 0.15, n_muscles)).tolist(),
             muscle_shift_deg=rng.normal(0, 5.0, n_muscles).tolist(),

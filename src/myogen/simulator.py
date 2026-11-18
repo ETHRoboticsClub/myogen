@@ -53,7 +53,7 @@ class Simulator:
         self.subject = subject or Subject()
         self.params = params or SimParams()
         self.model = ForearmModel(params=self.params.musculoskeletal)
-        self.model.scale_strength(self.subject.strength(self.model.nu))
+        self.model.scale_strength(self.subject.muscle_forces(self.model.nu))
         self.emg = EMGModel(self.model, self.subject, self.electrodes, self.params.emg)
 
     def with_electrodes(self, electrodes: Electrodes) -> Simulator:

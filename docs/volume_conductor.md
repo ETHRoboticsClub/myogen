@@ -51,6 +51,12 @@ propagates). Unit positions are the atlas anatomy's (`docs/anatomy.md`), moved w
 - Bipolar median frequency 82-111 Hz depending on depth (biphasic engine 45-55, recordings 21-63 Hz after their
   devices' filters): `iap_lambda` < 1 (longer action potentials) and `conduction_velocity` lower it.
 
+## On the datasets
+
+Known-placement comparison (`docs/realism_plan.md`): more realistic spatial statistics than the biphasic waveforms
+(ring patterns, correlation with distance, rest / move), lower transfer of a decoder trained on it on EMG-FK and
+DB8. Not the default yet.
+
 ## Limitations
 
 - One central bone, round section: the real section is oval with two bones off-centre.

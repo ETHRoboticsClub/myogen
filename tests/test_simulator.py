@@ -152,17 +152,17 @@ def test_tone():
 
 
 def test_subject_build():
-    """Presets set the build; muscularity scales the model's muscle forces (and the EMG amplitude, more weakly);
-    the average build is the default subject."""
-    avg = mg.Subject.build(0.5, 0.5)
-    assert avg.forearm_radius_mm == mg.Subject().forearm_radius_mm and avg.strength(3) == pytest.approx(np.ones(3))
-    athletic, slight = mg.Subject.preset("athletic"), mg.Subject.preset("slight")
-    assert athletic.forearm_radius_mm > slight.forearm_radius_mm
-    assert athletic.fat_mm < mg.Subject.preset("high_fat").fat_mm
+    """The reference preset is the default subject; strength scales the model's muscle forces (and the EMG
+    amplitude, more weakly) and the forearm radius; fat adds to the radius."""
+    ref = mg.Subject.preset("reference")
+    assert ref.forearm_radius_mm == pytest.approx(mg.Subject().forearm_radius_mm)
+    strong, weak = mg.Subject.preset("high_strength"), mg.Subject.preset("low_strength")
+    assert strong.forearm_radius_mm > weak.forearm_radius_mm
+    assert mg.Subject.preset("high_fat").forearm_radius_mm - ref.forearm_radius_mm == pytest.approx(4.0)
     force = lambda s: mg.Simulator("myo", s).model.m.actuator_gainprm[:, 2]   # noqa: E731
-    assert force(athletic) == pytest.approx(force(mg.Subject()) * athletic.strength(1)[0])
+    assert force(strong) == pytest.approx(force(mg.Subject()) * 1.3)
     extrinsic = np.ones(3, bool)
-    assert (athletic.muscle_amplitudes(extrinsic) > 1).all() and (slight.muscle_amplitudes(extrinsic) < 1).all()
+    assert (strong.muscle_amplitudes(extrinsic) > 1).all() and (weak.muscle_amplitudes(extrinsic) < 1).all()
 
 
 def test_subject_anatomy():

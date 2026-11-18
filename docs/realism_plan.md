@@ -93,6 +93,41 @@ Known placement, 3 subjects, decoder R² myogen -> real (other subject -> real):
   transfers worse (-0.89, -0.21, -0.52, -0.41): the anatomical frame is kept.
 - Still open: the ulnar side is weaker in myogen than in the recordings, and rest / move stays high (0.9 vs 0.4).
 
+### Why the atlas lowered the ring-pattern match, volume conductor, posture (Nov 2026)
+
+Ring-pattern r myogen-real fell with the atlas on NinaPro (DB2 0.20 -> 0.00, DB8 0.28 -> 0.02) while transfer
+rose. Turning myogen's ring by every step against the real bands (`compare_synthetic.py --rotations`) explains it:
+
+- **Frame offset**: with the atlas, pattern r peaks one electrode (45°) away from 0 (DB2 0.24, DB7 0.33, DB8 0.20
+  there; DB8 0.33 at 90°); the lines peaked at 0. The calibration baseline calls palmar where wrist flexion
+  peaks; anatomically the flexor mass is ulnar-palmar. The lines were wrong in the way that matched that
+  convention. Not an anatomy error: a frame definition the real bands and myogen do not share yet.
+- **Posture**: no dataset records forearm rotation and myogen replayed every motion supinated (the atlas's pose),
+  while NinaPro subjects rest the forearm on a desk. `Subject.pronation_rad` 1.5 (palm down) raises transfer on
+  DB7 / DB8 (below).
+
+Decoder R² myogen -> real (known placement, 3 subjects):
+
+| | EMG-FK | DB2 | DB7 | DB8 |
+|---|---|---|---|---|
+| other subject (yardstick) | -0.75 | -0.20 | -0.33 | -0.38 |
+| lines, biphasic | -0.30 | 0.01 | -0.44 | -0.57 |
+| atlas, biphasic | -0.24 | 0.10 | -0.11 | -0.49 |
+| **atlas, biphasic, pronation 1.5** | -0.29 | 0.06 | **-0.01** | **-0.19** |
+| atlas, volume conductor | -0.56 | 0.07 | -0.10 | -0.70 |
+| atlas, volume conductor, pronation 1.5 | -0.31 | 0.06 | -0.15 | -0.36 |
+
+- Atlas + pronation beats another real subject on every dataset: the dataset check's setting now.
+- The volume conductor (step 3, `docs/volume_conductor.md`) is the more realistic signal: ring-pattern r at 0°
+  0.54 / 0.08 / 0.34 / 0.27 (biphasic 0.35 / -0.03 / 0.13 / 0.03), correlation 4 electrodes apart 0.32 on DB2
+  (real 0.54, biphasic 0.18), rest / move on DB8 0.51 (real 0.46), the EDC electrode r 0.47. It transfers worse on
+  EMG-FK (monopolar: the cylinder's far field reaches every pole) and DB8; kept as an option
+  (`MotorUnitParams.waveform`) until that is understood. Its median frequency is 72 Hz after the datasets'
+  filters (real 61-63 on DB2 / DB8); `iap_lambda` barely moves it (the end-plate / tendon edges dominate).
+- Next: a shared frame (anchor myogen and the real bands the same way, or fit one rotation on NinaPro and check
+  it on the others); the transfer experiment with `Subject.random` (pronation, section rotation, muscle
+  variation all drawn) as augmentation, which is how the data would be used.
+
 ## Steps
 
 ### 1. Validation metrics (dataset repo + myogen statistics)
