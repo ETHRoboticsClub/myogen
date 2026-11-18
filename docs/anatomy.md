@@ -94,7 +94,9 @@ The atlas is one body; each `Subject` varies it (all off by default, `Subject.ra
 | `muscle_shift_deg` (per muscle) | turned around the forearm | normal, σ 5° |
 | `muscle_depth` (per muscle) | depth below the muscle surface scaled (< 1: nearer the skin) | lognormal, σ 0.1 |
 | `section_rotation_deg` | the whole section turned against the skin and the band | uniform ±15° |
-| `pronation_rad` | forearm rotation added to every motion (0 supinated, 1.5 palm down) | 0-1.5 |
+
+Forearm rotation comes only from the motion (`pro_sup_r`, when the hand tracking gives it); untracked, the
+forearm stays at the model's rest (supinated, as the atlas body).
 
 `Subject.build(strength, fat_mm)` sets both and derives the forearm radius: fat plus a muscle radius growing with
 sqrt(strength) (force ~ cross-sectional area). `Subject.preset(name)`: `reference` (the default subject, strength 1,

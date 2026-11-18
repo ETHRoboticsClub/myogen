@@ -246,7 +246,10 @@ def joint_engagement(model: ForearmModel, q_ref: np.ndarray, q_rest: np.ndarray,
     lp = signal.butter(2, p.speed_lowpass_hz, fs=fs, output="sos")
     velocity = np.gradient(u, axis=0) * fs
     speed = signal.sosfiltfilt(lp, np.abs(velocity), axis=0)
-    moving = np.sign(signal.sosfiltfilt(lp, velocity, axis=0)) * np.clip(speed - p.speed_deadzone, 0, p.speed_max)
+    direction = np.sign(signal.sosfiltfilt(lp, velocity, axis=0))
+    moving = direction * np.clip(speed - p.speed_deadzone, 0, p.speed_max)
+    if p.passive_return:     # back towards the relaxed posture the hand is let go, not driven
+        moving *= direction * np.sign(u - u_rest) > 0
     away = np.sign(u - u_rest) * np.clip(np.abs(u - u_rest) - p.posture_deadzone, 0, None) / p.posture_engaged
     engaged = np.clip(signal.sosfiltfilt(lp, np.clip(away + moving / p.speed_engaged, -1, 1), axis=0), -1, 1)
     return engaged, moving

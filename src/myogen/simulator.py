@@ -39,9 +39,6 @@ class CleanRun:
     filled_joints: list[str]
 
 
-PRONATION_JOINT = "pro_sup_r"
-
-
 class Simulator:
     """Movement in, sEMG recording out: run() = record(simulate_clean())."""
 
@@ -201,9 +198,7 @@ class Simulator:
 
     def joint_trajectory(self, motion: HandMotion) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """(q_ref (T, nq) with the warm-up hold, relaxed posture q_rest (nq,), hand angles (T, 23))."""
-        turn = np.zeros(len(HAND_JOINTS))
-        turn[HAND_JOINTS.index(PRONATION_JOINT)] = self.subject.pronation_rad    # how this person holds the forearm
-        hand = self._within_limits(motion.angles + turn)
+        hand = self._within_limits(motion.angles)
         elbow_rest = np.radians(self.subject.elbow_angle_deg)
         elbow = motion.elbow if motion.elbow is not None else np.full(len(hand), elbow_rest)
         ctrl = self.params.control
@@ -213,9 +208,9 @@ class Simulator:
         q_ref = self.model.full_q(hand, elbow)
         rest = motion.rest
         if rest is not None and rest.sum() > ctrl.min_rest_s * motion.fs:
-            hand_rest = np.median(motion.angles[rest], axis=0) + turn
+            hand_rest = np.median(motion.angles[rest], axis=0)
         else:
-            hand_rest = np.array([REST_POSTURE[j] for j in HAND_JOINTS]) + turn
+            hand_rest = np.array([REST_POSTURE[j] for j in HAND_JOINTS])
         q_rest = self.model.full_q(hand_rest[None], np.radians(self.subject.elbow_angle_deg))[0]
         return q_ref, q_rest, hand
 

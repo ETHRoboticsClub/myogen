@@ -55,6 +55,7 @@ class EffortParams:
     speed_deadzone: float = 0.15          # /s, below this a joint is not moving (sensor jitter)
     speed_max: float = 1.5                # /s, speed beyond which co-activation stops growing
     speed_engaged: float = 0.5            # /s, speed at which a joint counts as fully engaged
+    passive_return: bool = True           # movement back towards the relaxed posture adds no co-activation
     posture_deadzone: float = 0.1         # distance from the relaxed posture that is still relaxed
     posture_engaged: float = 0.4          # distance beyond the dead zone at which a joint is fully engaged
     cocontraction_peak: float = 0.3       # co-activation level reached in an episode

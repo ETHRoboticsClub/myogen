@@ -33,7 +33,6 @@ class Subject:
     residual_length: float = 1.0      # fraction of the forearm left (amputees); [0.35, 0.8]
     # Posture
     elbow_angle_deg: float = 72.0     # used when the motion has no elbow angle; [40, 103]
-    pronation_rad: float = 0.0        # added to every motion; 0 supinated, 1.5 palm down; [0, 1.5]
     armrest: bool = True              # forearm resting on a support (as in NinaPro) or held up
     # World gravity direction (projected perpendicular to the forearm on an armrest).
     gravity: tuple[float, float, float] = (0.0, 0.0, -1.0)
@@ -49,8 +48,8 @@ class Subject:
     hold_tone: float = 0.15           # co-activation while moving or holding a posture away from rest; [0.05, 0.25]
     move_cocontraction: float = 0.125  # extra co-activation proportional to movement speed; [0, 0.25]
     antagonist_ratio: float = 0.25    # co-activation of the antagonists relative to the agonists; [0.1, 0.4]
-    grip_load: float = 0.25           # probability of squeezing episodes while the hand is closed; [0, 0.5]
-    rest_tone: float = 0.04           # drive every muscle keeps at rest (real forearms are not silent); [0.02, 0.06]
+    grip_load: float = 0.0            # probability of squeezing episodes while the hand is closed (0: free movement)
+    rest_tone: float = 0.02           # drive every muscle keeps at rest (real forearms are not silent); [0.01, 0.04]
     seed: int = 0                     # randomness of the EMG noise and of the effort episodes
 
     def to_dict(self) -> dict[str, Any]:
@@ -119,10 +118,9 @@ class Subject:
             cocontraction=float(min(rng.exponential(0.02), 0.08)),
             hold_tone=float(rng.uniform(0.05, 0.25)),
             move_cocontraction=float(rng.uniform(0.0, 0.25)),
-            grip_load=float(rng.uniform(0.0, 0.5)),
             seed=int(rng.integers(2**31)),
             antagonist_ratio=float(rng.uniform(0.1, 0.4)),   # drawn after the others: their draws stay as they were
-            rest_tone=float(rng.uniform(0.02, 0.06)),
+            rest_tone=float(rng.uniform(0.01, 0.04)),
             # drawn last, so the draws above stay as they were
             strength=float(rng.uniform(0.7, 1.3)),
             muscle_strength=np.exp(rng.normal(0, 0.15, n_muscles)).tolist(),
@@ -130,5 +128,4 @@ class Subject:
             muscle_shift_deg=rng.normal(0, 5.0, n_muscles).tolist(),
             muscle_depth=np.exp(rng.normal(0, 0.1, n_muscles)).tolist(),
             section_rotation_deg=float(rng.uniform(-15, 15)),
-            pronation_rad=float(rng.uniform(0.0, 1.5)),
         )

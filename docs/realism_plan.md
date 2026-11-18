@@ -117,7 +117,8 @@ Decoder R² myogen -> real (known placement, 3 subjects):
 | atlas, volume conductor | -0.56 | 0.07 | -0.10 | -0.70 |
 | atlas, volume conductor, pronation 1.5 | -0.31 | 0.06 | -0.15 | -0.36 |
 
-- Atlas + pronation beats another real subject on every dataset: the dataset check's setting now.
+- Atlas + pronation beats another real subject on every dataset. But no dataset tracks the forearm rotation, and the
+  generator takes it only from tracking: `Subject.pronation_rad` was removed (forearm at rest when untracked).
 - The volume conductor (step 3, `docs/volume_conductor.md`) is the more realistic signal: ring-pattern r at 0°
   0.54 / 0.08 / 0.34 / 0.27 (biphasic 0.35 / -0.03 / 0.13 / 0.03), correlation 4 electrodes apart 0.32 on DB2
   (real 0.54, biphasic 0.18), rest / move on DB8 0.51 (real 0.46), the EDC electrode r 0.47. It transfers worse on
