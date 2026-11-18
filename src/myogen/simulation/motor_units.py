@@ -8,6 +8,10 @@ import numpy as np
 from scipy import signal
 
 from ..params import MotorUnitParams
+from .volume_conductor import MUAPTable
+
+WAVEFORMS = ("biphasic", "volume_conductor")
+REFERENCE_DISTANCE_M = 0.02     # pole to end-plate distance at which unit amplitudes are normalised
 
 if TYPE_CHECKING:
     from .emg import EMGModel
@@ -29,7 +33,8 @@ class MotorUnits:
         rng = np.random.default_rng(np.random.SeedSequence([emg.sub.seed, 7]))
         force = model.m.actuator_gainprm[:, 2]
         muscles = np.flatnonzero(model.extrinsic)            # the hand's own muscles are not under a forearm band
-        counts = np.clip(np.round(p.units_per_newton * force[muscles]), p.min_units, p.max_units).astype(int)
+        size = emg.sub.per_muscle("muscle_size", model.nu, 1.0)[muscles]       # force already holds the strength
+        counts = np.clip(np.round(p.units_per_newton * force[muscles] * size), p.min_units, p.max_units).astype(int)
         self.muscle = np.repeat(muscles, counts)              # (U,) muscle of each unit
         rank = np.concatenate([np.arange(n) / max(n - 1, 1) for n in counts])   # 0 smallest .. 1 largest
         # Recruitment (Fuglevand 1993): thresholds spread exponentially, most units recruited at low drive.
@@ -53,9 +58,18 @@ class MotorUnits:
                 points[sel] = pts[rng.integers(0, len(pts), sel.sum())]
             self.atlas = emg.anatomy.prepare(self.muscle[units], points)
             self.atlas_index[units] = np.arange(len(units))
-        # One waveform per width band; a unit's waveform at a pole is interpolated between two bands (log width).
-        self.bands = np.asarray(p.bands_ms) / 1000
-        self.kernels = [_biphasic(width, emg.fs) for width in self.bands]
+        if p.waveform not in WAVEFORMS:
+            raise ValueError(f"waveform must be one of {' | '.join(WAVEFORMS)}, got {p.waveform!r}")
+        self.table = None
+        if p.waveform == "volume_conductor":
+            # Waveforms from the layered cylinder of this subject's forearm at the electrodes' mean height.
+            z = float(np.mean(emg.poles[..., 2]))
+            self.table = MUAPTable(p.volume_conductor, float(emg.skin_radius(z)), emg.fat, emg.fs)
+            self.kernels = list(self.table.basis)
+        else:
+            # One waveform per width band; a unit's waveform at a pole is interpolated between two bands (log width).
+            self.bands = np.asarray(p.bands_ms) / 1000
+            self.kernels = [_biphasic(width, emg.fs) for width in self.bands]
         self.scale = self._scale(emg.sub.muscle_amplitudes(model.extrinsic))
 
     @property
@@ -71,10 +85,16 @@ class MotorUnits:
         muscle_amp, as the noise sources do."""
         p, emg = self.p, self.emg
         d0 = emg.fat + emg.params.superficial_depth_m
-        energy = float(np.sum(_biphasic(self.width_s(np.array(d0)), emg.fs) ** 2)) / emg.fs   # per spike, unit peak
+        if self.table is not None:     # the waveform there, the pole REFERENCE_DISTANCE_M from the end-plate
+            w = self.table.weights_at(np.array(emg.params.superficial_depth_m), np.array(0.0),
+                                      np.array(REFERENCE_DISTANCE_M))
+            energy, attenuation = float(np.sum(w ** 2)) / emg.fs, 1.0          # orthonormal waveforms
+        else:
+            energy = float(np.sum(_biphasic(self.width_s(np.array(d0)), emg.fs) ** 2)) / emg.fs   # unit peak
+            attenuation = float(np.exp(-d0 / emg.decay))
         rate = np.minimum(p.min_rate_hz + p.rate_gain_hz * (1 - self.threshold), p.peak_rate_hz)
         power = np.bincount(self.muscle, rate * self.amplitude ** 2, minlength=len(muscle_amp)) * energy
-        per_muscle = np.divide(muscle_amp, np.sqrt(power) * np.exp(-d0 / emg.decay), out=np.zeros(len(muscle_amp)),
+        per_muscle = np.divide(muscle_amp, np.sqrt(power) * attenuation, out=np.zeros(len(muscle_amp)),
                                where=power > 0)
         return self.amplitude * per_muscle[self.muscle]
 
@@ -119,20 +139,27 @@ class MotorUnits:
         emg = self.emg
         poles = emg.poles.reshape(-1, 3)
         upsample = int(round(emg.fs / fs_ctrl))
-        n_samples, n_bands = len(drive) * upsample, len(self.bands)
+        n_samples, n_bands = len(drive) * upsample, len(self.kernels)
         times, units = self.spikes(np.clip(drive, 0, 1), fs_ctrl, rng)
         sample = np.minimum(np.round(times * emg.fs).astype(int), n_samples - 1)
         tick = np.minimum((times * fs_ctrl).astype(int), len(drive) - 1)
         impulses = np.zeros((n_samples, len(poles), n_bands), np.float32)
         order = np.argsort(tick, kind="stable")
         bounds = np.searchsorted(tick[order], np.arange(len(drive) + 1))
-        log_bands = np.log(self.bands)
         for t in range(len(drive)):
             idx = order[bounds[t]:bounds[t + 1]]
-            if len(idx):
+            if not len(idx):
+                pass
+            elif self.table is not None:
+                weights = self._at_poles(units[idx], qpos[t], poles)                       # (S, P, waveforms)
+                at, which = np.unique(sample[idx], return_inverse=True)              # spikes sharing a sample add
+                onehot = np.zeros((len(at), len(idx)), np.float32)
+                onehot[which, np.arange(len(idx))] = 1
+                impulses[at] += (onehot @ weights.reshape(len(idx), -1)).reshape((len(at),) + weights.shape[1:])
+            else:
                 gain, width = self._at_poles(units[idx], qpos[t], poles)                   # (S, P) each
                 # Split each spike's gain between the two width bands around its width.
-                pos = np.clip(np.interp(np.log(width), log_bands, np.arange(n_bands)), 0, n_bands - 1 - 1e-9)
+                pos = np.clip(np.interp(np.log(width), np.log(self.bands), np.arange(n_bands)), 0, n_bands - 1 - 1e-9)
                 low, frac = pos.astype(int), (pos % 1).astype(np.float32)
                 rows = np.broadcast_to(sample[idx][:, None], gain.shape)
                 cols = np.broadcast_to(np.arange(len(poles)), gain.shape)
@@ -148,8 +175,10 @@ class MotorUnits:
             on_tick(len(drive), len(drive))
         return out
 
-    def _at_poles(self, units: np.ndarray, qpos: np.ndarray, poles: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """(S, P) amplitude and waveform width of these units at every pole, at joint state qpos."""
+    def _at_poles(self, units: np.ndarray, qpos: np.ndarray, poles: np.ndarray
+                  ) -> tuple[np.ndarray, np.ndarray] | np.ndarray:
+        """At joint state qpos, these units at every pole: (S, P) amplitude and waveform width (biphasic), or
+        (S, P, waveforms) waveform weights (volume_conductor)."""
         emg = self.emg
         emg.data.qpos[:] = qpos
         mujoco.mj_kinematics(emg.model.m, emg.data)
@@ -164,8 +193,13 @@ class MotorUnits:
         under_fat = emg.under_fat(pos[:, 2])
         r = np.linalg.norm(pos[:, :2], axis=1)
         pos[:, :2] *= (np.minimum(r, under_fat) / np.maximum(r, 1e-9))[:, None]
-        dist = np.linalg.norm(pos[:, None, :] - poles[None], axis=-1)
         in_limb = (pos[:, 2] < emg.limb_length) & (pos[:, 2] > -emg.params.elbow_margin_m)
+        if self.table is not None:      # depth below the muscle surface, angle, distance along from the end-plate
+            depth = under_fat - np.linalg.norm(pos[:, :2], axis=1)
+            dtheta = np.arctan2(poles[None, :, 1], poles[None, :, 0]) - np.arctan2(pos[:, 1], pos[:, 0])[:, None]
+            w = self.table.weights_at(depth[:, None], dtheta, poles[None, :, 2] - pos[:, 2, None])
+            return (w * (self.scale[units] * in_limb)[:, None, None]).astype(np.float32)
+        dist = np.linalg.norm(pos[:, None, :] - poles[None], axis=-1)
         gain = self.scale[units, None] * np.exp(-dist / emg.decay) * in_limb[:, None]
         return gain.astype(np.float32), self.width_s(dist)
 

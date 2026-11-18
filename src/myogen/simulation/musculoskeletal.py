@@ -112,6 +112,11 @@ class ForearmModel:
         rows = np.arange(len(p))[:, None]
         return p[rows, k] + frac[..., None] * (p[rows, k + 1] - p[rows, k])
 
+    def scale_strength(self, factors: np.ndarray) -> None:
+        """Maximal isometric force of every muscle times these factors (active and passive force alike)."""
+        self.m.actuator_gainprm[:, 2] *= factors
+        self.m.actuator_biasprm[:, 2] *= factors
+
     def radius_extent(self, d: mujoco.MjData | None = None) -> tuple[float, float]:
         """Distance from the elbow (m) of the radius head and of the styloid tip, in the forearm frame."""
         d = self.d if d is None else d

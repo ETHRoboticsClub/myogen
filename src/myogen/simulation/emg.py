@@ -46,7 +46,7 @@ class EMGModel:
         self.poles = self._pole_positions(electrodes)                       # (C, 2 or 1 poles, xyz)
         if p.anatomy not in ANATOMIES:
             raise ValueError(f"anatomy must be one of {' | '.join(ANATOMIES)}, got {p.anatomy!r}")
-        self.anatomy = Anatomy(model) if p.anatomy == "atlas" else None
+        self.anatomy = Anatomy(model, subject) if p.anatomy == "atlas" else None
         # The noise sources of an atlas muscle: its volume in n_sources slabs.
         if self.anatomy is not None:
             self.atlas_muscles = np.array(sorted(self.anatomy.points))
@@ -58,6 +58,8 @@ class EMGModel:
         along_fibre = np.array([e.ied_mm / 1000 * np.cos(np.radians(e.orientation_deg))
                                 for e in electrodes.electrodes])
         self.pole_delay = along_fibre / p.conduction_velocity
+        if p.engine == "motor_units" and p.motor_units.waveform == "volume_conductor":
+            self.pole_delay = np.zeros_like(along_fibre)     # each pole's waveform already propagates
 
         # Per-source amplitude, scaled so a fully driven superficial muscle under a pole gives ~1 (before gain_mv).
         norm = np.exp(-(self.fat + p.superficial_depth_m) / self.decay) * self.n_sources / 2
@@ -124,6 +126,21 @@ class EMGModel:
     def atlas_positions(self, pts: AtlasPoints, belly: np.ndarray, sel: np.ndarray | slice = slice(None)) -> np.ndarray:
         """(N, 3) prepared atlas points (Anatomy.prepare) in this subject's forearm at the current pose."""
         return self.anatomy.positions(pts, belly, self.under_fat, self.xy_scale, sel)
+
+    def muscle_points(self, d: mujoco.MjData) -> tuple[np.ndarray, np.ndarray]:
+        """(N, 3) points filling the muscles at this pose (an atlas muscle's volume, else its belly sources), and the
+        muscle of each (for drawing)."""
+        src = self.sources(d)
+        lines = np.ones(self.model.nu, bool) if self.anatomy is None else ~self.anatomy.has
+        pts, owner = [src[lines].reshape(-1, 3)], [np.repeat(np.flatnonzero(lines), self.n_sources)]
+        if self.anatomy is not None:
+            if not hasattr(self, "_volume"):
+                muscles = sorted(self.anatomy.points)
+                self._volume = self.anatomy.prepare(np.repeat(muscles, [len(self.anatomy.points[m]) for m in muscles]),
+                                                    np.vstack([self.anatomy.points[m] for m in muscles]))
+            pts.append(self.atlas_positions(self._volume, self.bellies(d)))
+            owner.append(self._volume.muscle)
+        return np.vstack(pts), np.concatenate(owner)
 
     def sources(self, d: mujoco.MjData) -> np.ndarray:
         """(nu, K, 3) source positions in the forearm frame, in this subject's cross-section."""

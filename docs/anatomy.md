@@ -70,6 +70,23 @@ above the elbow, outside every band.
 - Speed: placing the points is vectorised (with `belly_points`), so 10 s of 16-channel motor-unit EMG takes 1.6 s
   (3.0 s before, with the lines).
 
+## Variation between subjects (`Subject`)
+
+The atlas is one body; each `Subject` varies it (all off by default, `Subject.random(seed)` draws every one):
+
+| field | effect | `Subject.random` |
+|---|---|---|
+| `muscularity` (0-1) | maximal force of every muscle 0.6-1.4x (mechanics: a stronger muscle needs less drive), unit action potentials ~ strength^0.5 (larger fibres) | 0.15-0.85 |
+| `muscle_strength` (per muscle) | force factor on top of muscularity | lognormal, σ 0.15 |
+| `muscle_size` (per muscle) | the muscle's spread around its centre at each level (area ~ size) and its number of motor units | lognormal, σ 0.15 |
+| `muscle_shift_deg` (per muscle) | turned around the forearm | normal, σ 5° |
+| `muscle_depth` (per muscle) | depth below the muscle surface scaled (< 1: nearer the skin) | lognormal, σ 0.1 |
+| `section_rotation_deg` | the whole section turned against the skin and the band | uniform ±15° |
+
+Builds: `Subject.build(muscularity, adiposity)` sets muscularity, the fat (2-9 mm) and the forearm girth from both;
+`Subject.preset(name)` for `slight`, `average` (the default subject), `athletic`, `strong`, `high_fat`. Per-muscle
+lists are in the model's muscle order (`ForearmModel().muscle_names`).
+
 ## Checks
 
 - Muscle order around the arm matches textbook sections of a supinated forearm, palmar from the radial side:

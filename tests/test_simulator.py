@@ -149,3 +149,35 @@ def test_tone():
     activity = MuscleActivity(100.0, z, drive, z, z, np.ones((T, nu)), z, z, z, z, np.zeros(T))
     toned = with_tone(activity, mg.Subject(rest_tone=0.04)).drive
     assert np.allclose(toned[:20], 0.04) and np.allclose(toned[25, 0], 0.54)
+
+
+def test_subject_build():
+    """Presets set the build; muscularity scales the model's muscle forces (and the EMG amplitude, more weakly);
+    the average build is the default subject."""
+    avg = mg.Subject.build(0.5, 0.5)
+    assert avg.forearm_radius_mm == mg.Subject().forearm_radius_mm and avg.strength(3) == pytest.approx(np.ones(3))
+    athletic, slight = mg.Subject.preset("athletic"), mg.Subject.preset("slight")
+    assert athletic.forearm_radius_mm > slight.forearm_radius_mm
+    assert athletic.fat_mm < mg.Subject.preset("high_fat").fat_mm
+    force = lambda s: mg.Simulator("myo", s).model.m.actuator_gainprm[:, 2]   # noqa: E731
+    assert force(athletic) == pytest.approx(force(mg.Subject()) * athletic.strength(1)[0])
+    extrinsic = np.ones(3, bool)
+    assert (athletic.muscle_amplitudes(extrinsic) > 1).all() and (slight.muscle_amplitudes(extrinsic) < 1).all()
+
+
+def test_subject_anatomy():
+    """A subject's cross-section turned, one muscle shifted and pushed deeper, another made wider."""
+    model = ForearmModel()
+    n, brd, edc = model.nu, model.muscle_names.index("BRD_r"), model.muscle_names.index("EDC3_r")
+    base = mg.Subject()
+    shift, depth, size = np.zeros(n), np.ones(n), np.ones(n)
+    shift[brd], depth[brd], size[edc] = 20.0, 1.5, 2.0
+    varied = mg.Subject(section_rotation_deg=10.0, muscle_shift_deg=shift.tolist(), muscle_depth=depth.tolist(),
+                        muscle_size=size.tolist())
+    def points(subject, m):
+        return EMGModel(model, subject, mg.Electrodes([mg.Electrode(0, 7)]), EMGParams()).anatomy.points[m]
+    turn = lambda a, b: np.degrees(np.angle(np.mean(np.exp(1j * (a[:, 1] - b[:, 1])))))   # noqa: E731
+    assert turn(points(varied, brd), points(base, brd)) == pytest.approx(30.0, abs=0.5)
+    assert np.mean(points(varied, brd)[:, 2]) < np.mean(points(base, brd)[:, 2])          # deeper: nearer the axis
+    assert turn(points(varied, edc), points(base, edc)) == pytest.approx(10.0, abs=1.0)
+    assert np.std(points(varied, edc)[:, 2]) > 1.2 * np.std(points(base, edc)[:, 2])       # wider

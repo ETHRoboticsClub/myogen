@@ -39,6 +39,9 @@ class CleanRun:
     filled_joints: list[str]
 
 
+PRONATION_JOINT = "pro_sup_r"
+
+
 class Simulator:
     """Movement in, sEMG recording out: run() = record(simulate_clean())."""
 
@@ -50,6 +53,7 @@ class Simulator:
         self.subject = subject or Subject()
         self.params = params or SimParams()
         self.model = ForearmModel(params=self.params.musculoskeletal)
+        self.model.scale_strength(self.subject.strength(self.model.nu))
         self.emg = EMGModel(self.model, self.subject, self.electrodes, self.params.emg)
 
     def with_electrodes(self, electrodes: Electrodes) -> Simulator:
@@ -197,7 +201,9 @@ class Simulator:
 
     def joint_trajectory(self, motion: HandMotion) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """(q_ref (T, nq) with the warm-up hold, relaxed posture q_rest (nq,), hand angles (T, 23))."""
-        hand = self._within_limits(motion.angles)
+        turn = np.zeros(len(HAND_JOINTS))
+        turn[HAND_JOINTS.index(PRONATION_JOINT)] = self.subject.pronation_rad    # how this person holds the forearm
+        hand = self._within_limits(motion.angles + turn)
         elbow_rest = np.radians(self.subject.elbow_angle_deg)
         elbow = motion.elbow if motion.elbow is not None else np.full(len(hand), elbow_rest)
         ctrl = self.params.control
@@ -207,9 +213,9 @@ class Simulator:
         q_ref = self.model.full_q(hand, elbow)
         rest = motion.rest
         if rest is not None and rest.sum() > ctrl.min_rest_s * motion.fs:
-            hand_rest = np.median(motion.angles[rest], axis=0)
+            hand_rest = np.median(motion.angles[rest], axis=0) + turn
         else:
-            hand_rest = np.array([REST_POSTURE[j] for j in HAND_JOINTS])
+            hand_rest = np.array([REST_POSTURE[j] for j in HAND_JOINTS]) + turn
         q_rest = self.model.full_q(hand_rest[None], np.radians(self.subject.elbow_angle_deg))[0]
         return q_ref, q_rest, hand
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, is_dataclass, replace
 from typing import Any
 
 
@@ -66,6 +66,38 @@ class EffortParams:
 
 
 @dataclass(frozen=True)
+class VolumeConductorParams:
+    """Layered-cylinder volume conductor for the motor-unit waveforms (simulation/volume_conductor.py). Tissue values
+    after Farina et al. 2004 (IEEE TBME 51:415); the action potential after Rosenfalck 1969."""
+    sigma_muscle_radial: float = 0.1      # S/m, across the fibres
+    sigma_muscle_axial: float = 0.5       # S/m, along the fibres
+    sigma_fat: float = 0.05               # S/m
+    sigma_skin: float = 1.0               # S/m (an effective value, as in Farina 2004)
+    sigma_bone: float = 0.02              # S/m
+    skin_mm: float = 1.0
+    bone_radius_mm: float = 5.0           # one central bone standing for the radius and the ulna
+    conduction_velocity: float = 4.0      # m/s along the fibres
+    fibre_length_mm: float = 60.0         # end-plate in the middle, tendons at both ends
+    tendon_spread_mm: float = 6.0         # scatter of the fibre ends of a unit (their extinctions spread in time)
+    iap_lambda: float = 1.0               # 1/mm, Rosenfalck shape of the action potential
+    fibre_diameter_um: float = 55.0
+    sigma_intracellular: float = 1.01     # S/m
+    territory_mm: float = 2.0             # spread of a unit's fibres around its centre (blur of the fibre table)
+    endplate_spread_mm: float = 5.0       # scatter of a unit's end-plates along the fibres
+    electrode_radius_mm: float = 2.5      # round pole averaging the skin potential
+    # Table grid: depth below the muscle surface, angle from the pole, distance along the forearm from the end-plate.
+    depths_mm: tuple[float, ...] = (0.5, 1, 1.5, 2, 3, 4, 5, 6, 8, 10, 12, 14, 17, 20, 24, 28, 33)
+    angle_step_deg: float = 2.5
+    max_distance_mm: float = 60.0
+    distance_step_mm: float = 2.0
+    half_window_ms: float = 25.0          # waveform length each side of the firing
+    grid_mm: float = 0.5                  # axial grid of the field computation ...
+    window_mm: float = 256.0              # ... and its (periodic) length
+    angular_orders: int = 64              # Fourier orders around the forearm
+    n_basis: int = 10                     # waveforms kept (principal components of the table's shapes)
+
+
+@dataclass(frozen=True)
 class MotorUnitParams:
     """Motor-unit pools (simulation/motor_units.py): recruitment and rate coding after Fuglevand et al. 1993."""
     units_per_newton: float = 0.25        # units per N of a muscle's maximal force
@@ -80,6 +112,9 @@ class MotorUnitParams:
     isi_cv: float = 0.15                  # irregularity of the inter-spike intervals
     common_drive: float = 0.05            # relative drive fluctuation shared by a muscle's units ...
     common_drive_hz: float = 2.0          # ... below this frequency
+    waveform: str = "biphasic"            # biphasic: Gaussian derivative widening with distance, exponential gain |
+                                          # volume_conductor: layered-cylinder MUAPs (depth, angle, end-plate distance)
+    volume_conductor: VolumeConductorParams = field(default_factory=VolumeConductorParams)
     width_ms: float = 1.0                 # action potential time scale right under a pole
     width_per_mm: float = 0.25            # ms of widening per mm of distance (~ distance / conduction velocity)
     bands_ms: tuple[float, ...] = (0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0)   # waveform widths computed
@@ -139,4 +174,10 @@ class SimParams:
     qc: QCParams = field(default_factory=QCParams)
 
     def replace(self, **stages: dict[str, Any]) -> SimParams:
-        return replace(self, **{name: replace(getattr(self, name), **values) for name, values in stages.items()})
+        """Nested: a dict for a field that is itself a parameter set changes only the values it names."""
+        return _replace(self, stages)
+
+
+def _replace(obj: Any, values: dict[str, Any]) -> Any:
+    return replace(obj, **{k: _replace(getattr(obj, k), v) if isinstance(v, dict) and is_dataclass(getattr(obj, k))
+                           else v for k, v in values.items()})

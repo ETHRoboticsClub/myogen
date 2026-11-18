@@ -61,7 +61,7 @@ class ReplayView:
         self._last_plot = self._last_sources = self._last_colors = 0.0
         self._prepare_emg(recording.emg.astype(np.float32), recording.fs, emg_window)
 
-        # Muscle bellies mapped into the subject's cross-section, as the EMG model sees them.
+        # The muscles in the subject's cross-section, as the EMG model sees them (atlas volumes or belly lines).
         self.bellies = EMGModel(model, sub, electrodes)
         C = len(electrodes)
         self.chan_rgb = np.array([colorsys.hsv_to_rgb(k / C, 0.85, 1.0) for k in range(C)])
@@ -82,10 +82,10 @@ class ReplayView:
             self.pairs = sc.add_line_segments("/setup/forearm/bipolar", poles, colors=(40, 40, 40), line_width=3.0)
         self.labels = [sc.add_label(f"/setup/forearm/labels/{n}", n, position=p.mean(0) * [1.18, 1.18, 1.0],
                                     font_screen_scale=0.7) for n, p in zip(electrodes.names, poles)]
-        src = self.bellies.sources(model.d)
-        self.alive = ((src[..., 2] < z_end) & (src[..., 2] > -self.bellies.params.elbow_margin_m)).reshape(-1)
-        self.sources = sc.add_point_cloud("/setup/forearm/muscles", src.reshape(-1, 3)[self.alive],
-                                          np.zeros((int(self.alive.sum()), 3), np.uint8), point_size=0.004,
+        src, self.point_muscle = self.bellies.muscle_points(model.d)
+        self.alive = (src[:, 2] < z_end) & (src[:, 2] > -self.bellies.params.elbow_margin_m)
+        self.sources = sc.add_point_cloud("/setup/forearm/muscles", src[self.alive].astype(np.float32),
+                                          np.zeros((int(self.alive.sum()), 3), np.uint8), point_size=0.0025,
                                           point_shape="circle")
         self._add_gravity_and_armrest(sc)
         self._gui()
@@ -186,8 +186,8 @@ class ReplayView:
             if self.sources.visible and now - self._last_sources > SOURCES_PERIOD:
                 self._last_sources = now
                 exc = self.exc[int(t * self.rec.fs_labels) % len(self.exc)]
-                drive = np.repeat(exc, self.bellies.n_sources)[self.alive]
-                self.sources.points = self.bellies.sources(d).reshape(-1, 3)[self.alive].astype(np.float32)
+                drive = exc[self.point_muscle][self.alive]
+                self.sources.points = self.bellies.muscle_points(d)[0][self.alive].astype(np.float32)
                 self.sources.colors = _rgb(_heat(drive))
             if self.electrodes.visible and now - self._last_colors > PLOT_PERIOD:
                 self._last_colors = now

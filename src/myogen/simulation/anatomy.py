@@ -8,10 +8,12 @@ import mujoco
 import numpy as np
 
 if TYPE_CHECKING:
+    from ..inputs.subject import Subject
     from .musculoskeletal import ForearmModel
 
 ANATOMY_NPZ = Path(__file__).resolve().parent.parent / "models" / "forearm_anatomy.npz"
 TRACK_POINTS = 12          # belly points that carry the posture to the atlas points
+MIN_DEPTH_FRACTION = 0.05  # no muscle point nearer the axis than this (the bones)
 
 
 class Anatomy:
@@ -21,17 +23,38 @@ class Anatomy:
     cross-section comes from the atlas and the motion from the musculoskeletal model. Muscles outside the atlas (upper
     arm) have no points and keep the lines of action."""
 
-    def __init__(self, model: ForearmModel, path: str | Path = ANATOMY_NPZ) -> None:
+    def __init__(self, model: ForearmModel, subject: Subject | None = None, path: str | Path = ANATOMY_NPZ) -> None:
         self.model = model
         data = np.load(path)
         names = [str(n) for n in data["names"]]
         self.has = np.array([n in names for n in model.muscle_names])
         self.points = {i: data[f"points_{n}"].astype(float) for i, n in enumerate(model.muscle_names) if n in names}
+        if subject is not None:
+            self.points = {i: self._vary(i, p, subject) for i, p in self.points.items()}
         d = mujoco.MjData(model.m)
         d.qpos[:] = data["q_ref"]
         mujoco.mj_kinematics(model.m, d)
         self.z_head, self.z_tip = model.radius_extent(d)
         self.belly_ref = model.belly_points(TRACK_POINTS, d)
+
+    def _vary(self, muscle: int, points: np.ndarray, subject: Subject) -> np.ndarray:
+        """This subject's version of a muscle's points: the section turned, the muscle shifted around the forearm,
+        nearer or farther from the skin, and wider or narrower around its centre at each level."""
+        n = self.model.nu
+        size = subject.per_muscle("muscle_size", n, 1.0)[muscle]
+        depth = subject.per_muscle("muscle_depth", n, 1.0)[muscle]
+        turn = np.radians(subject.section_rotation_deg + subject.per_muscle("muscle_shift_deg", n, 0.0)[muscle])
+        out = points.copy()
+        for level in np.unique(points[:, 0]):
+            sel = points[:, 0] == level
+            angle, frac = points[sel, 1], points[sel, 2]
+            centre = np.angle(np.mean(np.exp(1j * angle)))
+            spread = np.sqrt(size)                                  # area ~ size
+            out[sel, 1] = centre + spread * np.angle(np.exp(1j * (angle - centre)))
+            out[sel, 2] = frac.mean() + spread * (frac - frac.mean())
+        out[:, 1] = np.angle(np.exp(1j * (out[:, 1] + turn)))
+        out[:, 2] = np.clip(1 - (1 - out[:, 2]) * depth, MIN_DEPTH_FRACTION, 1.0)   # depth below the muscle surface
+        return out
 
     def z(self, level: np.ndarray) -> np.ndarray:
         """Distance from the elbow (m) of a level along the radius (0 head, 1 styloid) at the reference pose."""
