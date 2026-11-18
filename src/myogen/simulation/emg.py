@@ -8,7 +8,10 @@ import numpy as np
 from scipy import signal
 
 from ..params import EMGParams
+from .motor_units import MotorUnits
 from .musculoskeletal import R_MODEL_REF
+
+ENGINES = ("noise", "motor_units")
 
 if TYPE_CHECKING:
     from ..inputs.electrodes import Electrodes
@@ -46,13 +49,19 @@ class EMGModel:
         # Per-source amplitude, scaled so a fully driven superficial muscle under a pole gives ~1 (before gain_mv).
         norm = np.exp(-(self.fat + p.superficial_depth_m) / self.decay) * self.n_sources / 2
         self.source_amp = np.repeat(subject.muscle_amplitudes(model.extrinsic), self.n_sources) / norm
+        if p.engine not in ENGINES:
+            raise ValueError(f"engine must be one of {' | '.join(ENGINES)}, got {p.engine!r}")
+        self.units = MotorUnits(self, p.motor_units) if p.engine == "motor_units" else None
 
     def generate(self, activity: MuscleActivity, rng: np.random.Generator,
                  on_tick: Callable[[int, int], None] | None = None) -> np.ndarray:
         """(T * upsample, C) EMG in mV at self.fs, from the drive and joint angles at the control rate.
         on_tick(k, T) is called after every chunk of ticks."""
-        envelope = np.clip(activity.drive, 0, 1) ** self.sub.amp_exponent     # how strongly each muscle fires
-        pole_emg = self._pole_signals(envelope, activity.qpos, activity.fs, rng, on_tick=on_tick)  # every pole
+        if self.units is not None:     # recruitment and rate coding make the amplitude follow the drive
+            pole_emg = self.units.pole_signals(activity.drive, activity.qpos, activity.fs, rng, on_tick=on_tick)
+        else:
+            envelope = np.clip(activity.drive, 0, 1) ** self.sub.amp_exponent     # how strongly each muscle fires
+            pole_emg = self._pole_signals(envelope, activity.qpos, activity.fs, rng, on_tick=on_tick)
         if self.monopolar:
             emg = pole_emg - pole_emg.mean(axis=1, keepdims=True) if self.reference == "average" else pole_emg
             scale = self.params.monopolar_scale

@@ -3,6 +3,7 @@ import numpy as np
 import pytest
 
 import myogen as mg
+from myogen.params import EMGParams
 from myogen.simulation.emg import EMGModel
 from myogen.simulation.muscle_activity import MuscleActivity, MuscleController
 from myogen.simulation.musculoskeletal import ForearmModel
@@ -44,12 +45,12 @@ def test_electrode_off_the_forearm():
         mg.Simulator(mg.Electrodes([mg.Electrode(0, 20.0)]), subject=amputee)
 
 
-def _rms(electrodes, muscle="EDC3_r"):
+def _rms(electrodes, muscle="EDC3_r", engine="noise", level=0.5):
     model = ForearmModel()
-    emg = EMGModel(model, mg.Subject(), electrodes)
+    emg = EMGModel(model, mg.Subject(), electrodes, EMGParams(engine=engine))
     T, nu = 200, model.nu
     drive = np.zeros((T, nu))
-    drive[:, model.muscle_names.index(muscle)] = 0.5
+    drive[:, model.muscle_names.index(muscle)] = level
     q = np.tile(model.default_qpos, (T, 1))
     nv = model.m.nv
     activity = MuscleActivity(100.0, drive, drive, np.zeros_like(drive), drive, np.ones((T, nu)), q, q,
@@ -64,6 +65,20 @@ def test_bipolar_physics():
         mg.Electrode(90, 7, ied_mm=20, orientation_deg=0), mg.Electrode(90, 7, ied_mm=20, orientation_deg=90),
         mg.Electrode(90, 7, ied_mm=40, orientation_deg=0), mg.Electrode(-90, 7, ied_mm=20)]))
     assert along > across and wide > along and palmar < 0.2 * along
+
+
+def test_motor_units():
+    """Recruitment and rate coding: more drive, more units firing, faster; a bipolar pair cancels far units, so it
+    sees less of the opposite side of the forearm than a monopolar electrode does."""
+    ring = lambda **kw: mg.Electrodes([mg.Electrode(a, 7, ied_mm=10) for a in (90, 0, -90, 180)], **kw)
+    low, high = (_rms(ring(), engine="motor_units", level=x)[0] for x in (0.05, 0.5))
+    assert 0 < low < 0.5 * high
+    bipolar, monopolar = _rms(ring(), engine="motor_units"), _rms(ring(derivation="monopolar"), engine="motor_units")
+    assert bipolar[2] / bipolar[0] < monopolar[2] / monopolar[0]
+    units = mg.Simulator(ring(), params=mg.SimParams().replace(emg={"engine": "motor_units"})).emg.units
+    times, fired = units.spikes(np.full((100, 48), 0.3), 100.0, np.random.default_rng(0))
+    rates = np.bincount(fired, minlength=units.n_units) / 1.0
+    assert (rates[units.threshold > 0.36] == 0).all() and rates[units.threshold < 0.1].mean() > 10   # 5% common drive
 
 
 def test_monopolar():

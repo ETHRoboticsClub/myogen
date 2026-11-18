@@ -66,8 +66,30 @@ class EffortParams:
 
 
 @dataclass(frozen=True)
+class MotorUnitParams:
+    """Motor-unit pools (simulation/motor_units.py): recruitment and rate coding after Fuglevand et al. 1993."""
+    units_per_newton: float = 0.25        # units per N of a muscle's maximal force
+    min_units: int = 20
+    max_units: int = 200
+    recruitment_max: float = 0.7          # drive at which a muscle's last unit is recruited
+    recruitment_range: float = 30.0       # largest / smallest recruitment threshold
+    amplitude_range: float = 10.0         # largest / smallest action potential amplitude (later units are larger)
+    min_rate_hz: float = 8.0              # firing rate at recruitment
+    rate_gain_hz: float = 40.0            # rate increase per unit of drive above the threshold
+    peak_rate_hz: float = 35.0
+    isi_cv: float = 0.15                  # irregularity of the inter-spike intervals
+    common_drive: float = 0.05            # relative drive fluctuation shared by a muscle's units ...
+    common_drive_hz: float = 2.0          # ... below this frequency
+    width_ms: float = 1.0                 # action potential time scale right under a pole
+    width_per_mm: float = 0.25            # ms of widening per mm of distance (~ distance / conduction velocity)
+    bands_ms: tuple[float, ...] = (0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0)   # waveform widths computed
+
+
+@dataclass(frozen=True)
 class EMGParams:
     """From muscle activity to the signal at the electrodes (simulation/emg.py)."""
+    engine: str = "noise"                 # noise: band-limited noise sources | motor_units: motor-unit spike trains
+    motor_units: MotorUnitParams = field(default_factory=MotorUnitParams)
     n_sources: int = 6                    # point sources per muscle belly
     decay_mm: float = 12.0                # distance over which a source's gain at a pole falls by 1/e
     conduction_velocity: float = 4.0      # m/s along the fibres (sets the delay between the two poles)
