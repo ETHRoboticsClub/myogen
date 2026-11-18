@@ -26,6 +26,25 @@ Causes, from the experiments:
 - BioMime (motor-unit level, learned MUAPs) matched the correlation across the band on DB5 but was worse elsewhere
   and much slower: dropped. Speed is a constraint: today a 10 s motion takes 5.2 s (2.6 s of it the EMG step).
 
+## Results so far (3 subjects per dataset; R²: joint decoder, trained on one repetition, tested on the other)
+
+| | EMG-FK | DB2 | DB7 | DB8 |
+|---|---|---|---|---|
+| decoder real -> real | 0.19 | 0.36 | 0.32 | 0.45 |
+| decoder other subject -> real (the yardstick) | -0.19 | -0.20 | -0.11 | -0.23 |
+| decoder myogen -> real: noise, decay 12 | -0.57 | -0.19 | -0.76 | -2.78 |
+| ... motor units, decay 12 | -0.36 | -0.24 | -0.54 | -3.38 |
+| ... motor units, decay 8 | -0.29 | **-0.08** | -0.23 | -2.52 |
+| ... motor units, decay 5 | -0.61 | **0.03** | -0.21 | -1.51 |
+| ring pattern r, motor units decay 8 (real-real) | 0.70 (0.83) | 0.46 (0.51) | 0.21 (0.59) | 0.46 (0.56) |
+
+- Motor units fixed the texture: median frequency 77-82 Hz -> 45-55 Hz (real 21-63), kurtosis 7-9 -> 10-14
+  (real 7-27); bipolar is now more selective than monopolar. Same run time as the noise engine.
+- With motor units the spread can shrink: decay 8 mm matches the real correlation vs distance on DB2 and transfers
+  better than another real subject there. Default for the dataset check: motor units, decay 8.
+- DB8 fails everywhere: its simulated rest is silent (rest / move 0.07 vs real 0.46) while real subjects keep a
+  tone. That is step 4 (drive), now the largest gap.
+
 ## Steps
 
 ### 1. Validation metrics (dataset repo + myogen statistics)
