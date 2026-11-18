@@ -8,7 +8,7 @@ version = "0.3.0"
 description = "Synthetic forearm sEMG from hand and wrist joint angles, on a musculoskeletal forearm model"
 readme = "README.md"
 license = "MIT"
-license-files = ["LICENSE", "src/myogen/models/LICENSE-MyoSim"]
+license-files = ["LICENSE", "src/myogen/models/LICENSE-MyoSim", "src/myogen/models/LICENSE-BodyParts3D"]
 authors = [{ name = "Marcos Oriol" }]
 requires-python = ">=3.11"
 dependencies = ["mujoco>=3.4", "numpy", "scipy", "h5py", "pyyaml", "rich"]
@@ -36,7 +36,8 @@ myogen = "myogen.tools.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-myogen = ["py.typed", "models/*.xml", "models/meshes/*.stl", "models/LICENSE-MyoSim", "models/build_model.py"]
+myogen = ["py.typed", "models/*.xml", "models/meshes/*.stl", "models/LICENSE-MyoSim", "models/build_model.py",
+          "models/forearm_anatomy.npz", "models/LICENSE-BodyParts3D", "models/build_anatomy.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

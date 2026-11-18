@@ -59,12 +59,27 @@ def _rms(electrodes, muscle="EDC3_r", engine="noise", level=0.5):
 
 
 def test_bipolar_physics():
-    """Over the extensors (+90 deg): an electrode along the fibres sees more than one across them, a wider pole
-    spacing more than a narrower one, and the opposite side of the forearm much less."""
+    """Over EDC (60 deg in the atlas): an electrode along the fibres sees more than one across them, a wider pole
+    spacing about as much or more (EDC is superficial: 20 mm already decorrelates the poles), and the opposite side
+    of the forearm much less."""
     along, across, wide, palmar = _rms(mg.Electrodes([
-        mg.Electrode(90, 7, ied_mm=20, orientation_deg=0), mg.Electrode(90, 7, ied_mm=20, orientation_deg=90),
-        mg.Electrode(90, 7, ied_mm=40, orientation_deg=0), mg.Electrode(-90, 7, ied_mm=20)]))
-    assert along > across and wide > along and palmar < 0.2 * along
+        mg.Electrode(60, 7, ied_mm=20, orientation_deg=0), mg.Electrode(60, 7, ied_mm=20, orientation_deg=90),
+        mg.Electrode(60, 7, ied_mm=40, orientation_deg=0), mg.Electrode(-120, 7, ied_mm=20)]))
+    assert along > 2 * across and wide > 0.9 * along and palmar < 0.2 * along
+
+
+def test_anatomy():
+    """The atlas puts the muscles the lines of action misplace where they are (supinated forearm, proximal third):
+    brachioradialis radial-palmar, FCU ulnar, ECRL radial-dorsal, EDC dorsal, and superficial ones near the skin."""
+    model = ForearmModel()
+    emg = EMGModel(model, mg.Subject(), mg.Electrodes([mg.Electrode(0, 7)]), EMGParams())
+    src = emg.sources(model.d)
+    for name, (lo, hi) in {"BRD_r": (-70, 0), "FCU_r": (140, 200), "ECRL_r": (0, 45), "EDC3_r": (30, 90)}.items():
+        s = src[model.muscle_names.index(name), :3]               # the proximal sources, under a band
+        angle = np.degrees(np.angle(np.mean(np.exp(1j * np.arctan2(s[:, 1], s[:, 0])))))
+        assert (angle - lo) % 360 <= hi - lo, (name, angle)                  # within [lo, hi], wrapping
+        depth = emg.skin_radius(s[:, 2]) - np.hypot(s[:, 0], s[:, 1]) - emg.fat
+        assert np.median(depth) < 0.012, (name, depth)
 
 
 def test_motor_units():

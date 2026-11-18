@@ -35,11 +35,24 @@ class MotorUnits:
         # Recruitment (Fuglevand 1993): thresholds spread exponentially, most units recruited at low drive.
         self.threshold = p.recruitment_max * np.exp(np.log(p.recruitment_range) * (rank - 1))
         self.amplitude = np.exp(np.log(p.amplitude_range) * rank)
-        # Territory: a point along the belly (one of the EMG sources) and an offset across the muscle.
+        # Territory: a point along the belly (one of the EMG sources) and an offset across the muscle; in an atlas
+        # muscle, a point of its volume instead.
         self.segment = rng.integers(0, emg.n_sources, len(self.muscle))
         radius = emg.sub.muscle_spread_mm / 1000 * np.sqrt(rng.uniform(0, 1, len(self.muscle)))
         angle = rng.uniform(0, 2 * np.pi, len(self.muscle))
         self.offset = np.stack([radius * np.cos(angle), radius * np.sin(angle)], axis=1)
+        self.in_atlas = np.zeros(len(self.muscle), bool)
+        self.atlas_index = np.full(len(self.muscle), -1)          # unit -> its row in self.atlas
+        if emg.anatomy is not None:
+            self.in_atlas = emg.anatomy.has[self.muscle]
+            units = np.flatnonzero(self.in_atlas)
+            points = np.empty((len(units), 3))
+            for m in np.unique(self.muscle[units]):
+                sel = self.muscle[units] == m
+                pts = emg.anatomy.points[m]
+                points[sel] = pts[rng.integers(0, len(pts), sel.sum())]
+            self.atlas = emg.anatomy.prepare(self.muscle[units], points)
+            self.atlas_index[units] = np.arange(len(units))
         # One waveform per width band; a unit's waveform at a pole is interpolated between two bands (log width).
         self.bands = np.asarray(p.bands_ms) / 1000
         self.kernels = [_biphasic(width, emg.fs) for width in self.bands]
@@ -140,12 +153,17 @@ class MotorUnits:
         emg = self.emg
         emg.data.qpos[:] = qpos
         mujoco.mj_kinematics(emg.model.m, emg.data)
-        src = emg.sources(emg.data)                                              # (nu, K, 3)
-        pos = src[self.muscle[units], self.segment[units]].copy()
-        xy = pos[:, :2] + self.offset[units]
-        under_fat = emg.skin_radius(pos[:, 2]) - emg.fat
-        r = np.linalg.norm(xy, axis=1)
-        pos[:, :2] = xy * (np.minimum(r, under_fat) / np.maximum(r, 1e-9))[:, None]
+        atlas = self.in_atlas[units]
+        pos = np.empty((len(units), 3))
+        if not atlas.all():
+            src = emg.sources(emg.data)                                          # (nu, K, 3)
+            pos[~atlas] = src[self.muscle[units[~atlas]], self.segment[units[~atlas]]]
+            pos[~atlas, :2] += self.offset[units[~atlas]]
+        if atlas.any():
+            pos[atlas] = emg.atlas_positions(self.atlas, emg.bellies(emg.data), self.atlas_index[units[atlas]])
+        under_fat = emg.under_fat(pos[:, 2])
+        r = np.linalg.norm(pos[:, :2], axis=1)
+        pos[:, :2] *= (np.minimum(r, under_fat) / np.maximum(r, 1e-9))[:, None]
         dist = np.linalg.norm(pos[:, None, :] - poles[None], axis=-1)
         in_limb = (pos[:, 2] < emg.limb_length) & (pos[:, 2] > -emg.params.elbow_margin_m)
         gain = self.scale[units, None] * np.exp(-dist / emg.decay) * in_limb[:, None]

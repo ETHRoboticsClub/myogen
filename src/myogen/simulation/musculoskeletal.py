@@ -52,6 +52,9 @@ class ForearmModel:
             adr, num = m.tendon_adr[t], m.tendon_num[t]
             self.path_sites.append(np.array([m.wrap_objid[k] for k in range(adr, adr + num)
                                              if m.wrap_type[k] == mujoco.mjtWrap.mjWRAP_SITE]))
+        # The same paths padded to one length (the last site repeated) for vectorised belly points.
+        n_sites = max(len(p) for p in self.path_sites)
+        self.path_padded = np.array([np.concatenate([p, np.repeat(p[-1:], n_sites - len(p))]) for p in self.path_sites])
         elbow, wrist = self._axis_points(self.d)
         self.forearm_length = float(np.linalg.norm(wrist - elbow))       # m
 
@@ -96,14 +99,29 @@ class ForearmModel:
         whose arc length is the fibre length."""
         d = self.d if d is None else d
         origin, axes = self.forearm_frame(d)
-        out = np.zeros((self.m.nu, n_per_muscle, 3))
-        u = (np.arange(n_per_muscle) + 0.5) / n_per_muscle
-        for i, sites in enumerate(self.path_sites):
-            p = (d.site_xpos[sites] - origin) @ axes.T
-            s = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(p, axis=0), axis=1))])
-            fibre = np.clip(s[-1] - max(self.tendon_slack[i], 0.0), 0.2 * s[-1], s[-1])
-            out[i] = np.stack([np.interp(u * fibre, s, p[:, k]) for k in range(3)], axis=1)
-        return out
+        p = (d.site_xpos[self.path_padded] - origin) @ axes.T                   # (nu, sites, 3)
+        seg = np.linalg.norm(np.diff(p, axis=1), axis=2)
+        s = np.concatenate([np.zeros((len(p), 1)), np.cumsum(seg, axis=1)], axis=1)
+        total = s[:, -1]
+        fibre = np.clip(total - np.maximum(self.tendon_slack, 0.0), 0.2 * total, total)
+        target = (np.arange(n_per_muscle) + 0.5) / n_per_muscle * fibre[:, None]   # (nu, n) arc length
+        k = np.clip((s[:, None, :] <= target[..., None]).sum(axis=2) - 1, 0, s.shape[1] - 2)
+        s0 = np.take_along_axis(s, k, axis=1)
+        frac = np.divide(target - s0, np.take_along_axis(seg, k, axis=1), out=np.zeros_like(target),
+                         where=np.take_along_axis(seg, k, axis=1) > 0)
+        rows = np.arange(len(p))[:, None]
+        return p[rows, k] + frac[..., None] * (p[rows, k + 1] - p[rows, k])
+
+    def radius_extent(self, d: mujoco.MjData | None = None) -> tuple[float, float]:
+        """Distance from the elbow (m) of the radius head and of the styloid tip, in the forearm frame."""
+        d = self.d if d is None else d
+        g = self.m.geom("radius_r").id
+        mesh = self.m.geom_dataid[g]
+        adr = self.m.mesh_vertadr[mesh]
+        v = self.m.mesh_vert[adr:adr + self.m.mesh_vertnum[mesh]]
+        origin, axes = self.forearm_frame(d)
+        z = ((d.geom_xpos[g] + v @ d.geom_xmat[g].reshape(3, 3).T) - origin) @ axes[2]
+        return float(z.min()), float(z.max())
 
     def moment_arms(self, qpos: np.ndarray) -> np.ndarray:
         """(nu, nv) muscle moment arms (m) at joint state qpos."""

@@ -8,10 +8,12 @@ import numpy as np
 from scipy import signal
 
 from ..params import EMGParams
+from .anatomy import TRACK_POINTS, Anatomy, AtlasPoints
 from .motor_units import MotorUnits
 from .musculoskeletal import R_MODEL_REF
 
 ENGINES = ("noise", "motor_units")
+ANATOMIES = ("atlas", "lines")
 
 if TYPE_CHECKING:
     from ..inputs.electrodes import Electrodes
@@ -22,7 +24,9 @@ if TYPE_CHECKING:
 
 class EMGModel:
     """Clean sEMG at the electrodes from muscle activity (forearm frame: z along the forearm from the elbow,
-    metres). Each muscle belly is n_sources point sources emitting band-limited noise; each electrode pole sees them
+    metres). The forearm muscles sit where the BodyParts3D atlas has them (anatomy "atlas", simulation/anatomy.py)
+    or on the model's lines of action ("lines"). Each muscle is n_sources point sources emitting band-limited noise
+    (engine "noise") or a motor-unit pool (MotorUnits); each electrode pole sees them
     attenuated with distance; bipolar = pole 1 - pole 2 delayed by the conduction time between them; monopolar = the
     electrode's single pole against a distant reference, or against the average of the electrodes."""
 
@@ -40,6 +44,15 @@ class EMGModel:
         self.source_offset = np.random.default_rng(subject.seed).normal(
             0.0, subject.muscle_spread_mm / 1000, size=(model.nu, self.n_sources, 2))
         self.poles = self._pole_positions(electrodes)                       # (C, 2 or 1 poles, xyz)
+        if p.anatomy not in ANATOMIES:
+            raise ValueError(f"anatomy must be one of {' | '.join(ANATOMIES)}, got {p.anatomy!r}")
+        self.anatomy = Anatomy(model) if p.anatomy == "atlas" else None
+        # The noise sources of an atlas muscle: its volume in n_sources slabs.
+        if self.anatomy is not None:
+            self.atlas_muscles = np.array(sorted(self.anatomy.points))
+            self.atlas_sources = self.anatomy.prepare(
+                np.repeat(self.atlas_muscles, self.n_sources),
+                np.vstack([self.anatomy.centroids(i, self.n_sources) for i in self.atlas_muscles]))
 
         # Delay (s) between the two poles: the along-fibre part of the pole spacing over the conduction velocity.
         along_fibre = np.array([e.ied_mm / 1000 * np.cos(np.radians(e.orientation_deg))
@@ -96,18 +109,38 @@ class EMGModel:
                       for angle, z in pole_ends]
         return np.array(poles).reshape(len(electrodes), -1, 3)
 
+    def under_fat(self, z: np.ndarray) -> np.ndarray:
+        """Radius (m) left for muscle at distance z from the elbow."""
+        return self.skin_radius(z) - self.fat
+
+    def xy_scale(self, z: np.ndarray) -> np.ndarray:
+        """The generic model's cross-section -> this subject's, at distance z from the elbow."""
+        return self.under_fat(z) * self.sub.radial_fill / R_MODEL_REF
+
+    def bellies(self, d: mujoco.MjData) -> np.ndarray:
+        """(nu, TRACK_POINTS, 3) the model's bellies now (they carry the posture to the atlas points)."""
+        return self.model.belly_points(TRACK_POINTS, d)
+
+    def atlas_positions(self, pts: AtlasPoints, belly: np.ndarray, sel: np.ndarray | slice = slice(None)) -> np.ndarray:
+        """(N, 3) prepared atlas points (Anatomy.prepare) in this subject's forearm at the current pose."""
+        return self.anatomy.positions(pts, belly, self.under_fat, self.xy_scale, sel)
+
     def sources(self, d: mujoco.MjData) -> np.ndarray:
-        """(nu, K, 3) source positions in the forearm frame, mapped into this subject's cross-section."""
+        """(nu, K, 3) source positions in the forearm frame, in this subject's cross-section."""
         model_pts = self.model.belly_points(self.n_sources, d)               # in the generic model's forearm
         z = model_pts[..., 2]
-        under_fat = self.skin_radius(z) - self.fat                           # radius left for muscle
         # Rescale the model's cross-section to this subject's, then add the per-subject offsets.
-        muscle_radius = under_fat * self.sub.radial_fill
-        xy = model_pts[..., :2] / R_MODEL_REF * muscle_radius[..., None] + self.source_offset
+        xy = model_pts[..., :2] * self.xy_scale(z)[..., None] + self.source_offset
+        out = np.concatenate([xy, z[..., None]], axis=-1)
+        if self.anatomy is not None:
+            out[self.atlas_muscles] = self.atlas_positions(self.atlas_sources, self.bellies(d)).reshape(
+                len(self.atlas_muscles), self.n_sources, 3)
+            out[self.atlas_muscles, :, :2] += self.source_offset[self.atlas_muscles]
         # Pull back any source the offset pushed into the fat layer.
-        r = np.linalg.norm(xy, axis=-1)
-        xy *= (np.minimum(r, under_fat) / np.maximum(r, 1e-9))[..., None]
-        return np.concatenate([xy, z[..., None]], axis=-1)
+        under_fat = self.under_fat(out[..., 2])
+        r = np.linalg.norm(out[..., :2], axis=-1)
+        out[..., :2] *= (np.minimum(r, under_fat) / np.maximum(r, 1e-9))[..., None]
+        return out
 
     def gains(self, qpos: np.ndarray) -> np.ndarray:
         """(nu * K, poles) gain from every source to every pole at joint state qpos: exp(-distance / decay)."""

@@ -90,6 +90,8 @@ class EMGParams:
     """From muscle activity to the signal at the electrodes (simulation/emg.py)."""
     engine: str = "noise"                 # noise: band-limited noise sources | motor_units: motor-unit spike trains
     motor_units: MotorUnitParams = field(default_factory=MotorUnitParams)
+    anatomy: str = "atlas"                # atlas: muscle volumes from BodyParts3D (docs/anatomy.md) | lines: the
+                                          # model's lines of action
     n_sources: int = 6                    # point sources per muscle belly
     decay_mm: float = 12.0                # distance over which a source's gain at a pole falls by 1/e
     conduction_velocity: float = 4.0      # m/s along the fibres (sets the delay between the two poles)

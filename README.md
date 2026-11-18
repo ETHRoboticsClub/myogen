@@ -28,7 +28,7 @@ The notebooks are the way in: `notebooks/01_quickstart.ipynb`, then `notebooks/0
 ```
 src/myogen/
   inputs/        motion, subject, electrodes
-  simulation/    musculoskeletal → muscle_activity → emg → acquisition
+  simulation/    musculoskeletal → muscle_activity → emg → acquisition; anatomy (where the muscles sit)
   tools/         calibration, viewer, command line
   params.py      the model's constants
   simulator.py   runs the pipeline
@@ -38,4 +38,6 @@ src/myogen/
 ## License
 
 MIT. The forearm model in `src/myogen/models/` is derived from MyoSim and distributed under Apache-2.0
-(`src/myogen/models/LICENSE-MyoSim`).
+(`src/myogen/models/LICENSE-MyoSim`). The muscle anatomy (`src/myogen/models/forearm_anatomy.npz`, `docs/anatomy/`)
+is derived from BodyParts3D, (c) The Database Center for Life Science, under CC BY-SA 2.1 Japan
+(`src/myogen/models/LICENSE-BodyParts3D`; how it is made: `docs/anatomy.md`).

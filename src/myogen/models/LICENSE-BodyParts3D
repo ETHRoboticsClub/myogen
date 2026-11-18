@@ -1,0 +1,9 @@
+forearm_anatomy.npz and docs/anatomy/ (slices.png, levels.csv) are derived from BodyParts3D:
+
+    BodyParts3D, (c) The Database Center for Life Science licensed under CC Attribution-Share Alike 2.1 Japan
+    https://dbarchive.biosciencedbc.jp/en/bodyparts3d/
+    Licence: https://creativecommons.org/licenses/by-sa/2.1/jp/deed.en
+
+Release 4.0, IS-A tree, 99 % reduced meshes (isa_BP3D_4.0_obj_99.zip). The muscle volumes were sliced, sampled and
+expressed in myogen's forearm frame by build_anatomy.py (see docs/anatomy.md). These derived files are distributed
+under the same licence (CC BY-SA 2.1 JP); the rest of myogen is MIT.

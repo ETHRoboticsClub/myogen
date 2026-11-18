@@ -64,6 +64,35 @@ co-contraction did not help. The simulated rest / move ratio stays high (0.8 vs 
 (effort-minimal control engages few muscles), and MyoHand's fingers cannot hyperextend (MCP 0-1.57 rad), so
 extension movements are clipped.
 
+### Anatomy from an atlas (step 5, first part)
+
+The muscles now sit where BodyParts3D has them (`EMGParams.anatomy = "atlas"`, `docs/anatomy.md`): each motor unit
+at a point of its muscle's volume, moved by the model's belly with the posture. Under the band, BRD is radial-palmar
+(-33 deg, was +67), ECRL radial (19, was 87), FCU ulnar (167, was -100), and the superficial muscles 6-9 mm below
+the fat (were 12-21 mm). Placing the points is vectorised, with `belly_points`: 1.6 s for 10 s of 16-channel
+motor-unit EMG (3.0 s before).
+
+Known placement, 3 subjects, decoder R² myogen -> real (other subject -> real):
+
+| | EMG-FK | DB2 | DB7 | DB8 |
+|---|---|---|---|---|
+| lines, decay 8 | -0.30 | 0.01 | -0.44 | -0.57 |
+| **atlas, decay 8** | **-0.25** | **0.08** | **-0.06** | -0.47 |
+| atlas, decay 12 | -0.18 | 0.08 | -0.17 | -0.74 |
+| atlas, decay 16 | -0.17 | 0.04 | -0.23 | -0.86 |
+| other subject (yardstick) | -0.75 | -0.20 | -0.33 | -0.38 |
+
+- With the atlas, myogen transfers better than another real subject on EMG-FK, DB2 and DB7; DB8 is close.
+- The electrodes over FDS by palpation (DB2 / DB7) follow better (r 0.29-0.30 -> 0.32-0.38); EDC stays at 0.36-0.43.
+- Spatial spread: with muscles this superficial, decay 8 mm is too selective (r between electrodes 4 apart 0.19
+  vs 0.54 real on DB2; the ring profile peaks 4x over ECRL / ECRB / EDC). Decay 16 matches the spread (0.35) and
+  the ring pattern (DB8 0.21 vs 0.02) but transfers worse. The gain law (exponential, one decay for every depth) is
+  the limit now: step 3 (layered cylinder, precomputed MUAP table) gives depth-dependent spread and shape.
+- Frame: the calibration baseline anchors "wrist flexion peaks palmar"; in the anatomical atlas the wrist flexors'
+  centre is ulnar-palmar (-169 deg). Turning myogen's ring by that same rule (`sim_anchor` in the dataset check)
+  transfers worse (-0.89, -0.21, -0.52, -0.41): the anatomical frame is kept.
+- Still open: the ulnar side is weaker in myogen than in the recordings, and rest / move stays high (0.9 vs 0.4).
+
 ## Steps
 
 ### 1. Validation metrics (dataset repo + myogen statistics)
@@ -113,7 +142,7 @@ ratios and lags of the free datasets: unloaded holds need no force data.
 
 ### 5. Anatomy and devices
 
-- Muscle cross-sections: today the bellies are the tendon path lines of the MSK model, scaled into a cylinder. Fit
+- Muscle cross-sections (done: BodyParts3D atlas, above; next: per-subject variation). Before, the bellies were the tendon path lines of the MSK model, scaled into a cylinder. Fit
   each muscle's position and area at several levels along the forearm to a cross-sectional atlas (MRI / Visible
   Human): what sits under each electrode is what the pattern r measures.
 - Subject priors (forearm size, fat, muscle sizes) from anthropometric ranges; band placement (rotation, along-arm
