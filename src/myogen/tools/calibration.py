@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from scipy import signal
+from scipy.stats import kurtosis as stats_kurtosis
 
 from ..parallel import n_workers, process_pool
 from ..progress import Counter, progress_bars
@@ -62,6 +63,9 @@ def statistics(emg: np.ndarray, fs: float, device: str, rest: np.ndarray | None 
         f, P = signal.welch(np.asarray(emg, float), fs=fs, nperseg=min(256, len(emg)), axis=0)
         cdf = np.cumsum(P.mean(1)) / P.mean(1).sum()
         stats["median_freq_hz"] = float(f[np.searchsorted(cdf, 0.5)])
+        # Peakedness of the signal while moving: 3 for Gaussian noise, higher when few motor units fire.
+        moving = np.asarray(emg, float)[_resize(move, len(emg))]
+        stats["kurtosis"] = float(np.median(stats_kurtosis(moving, axis=0, fisher=False)))
     return stats
 
 
