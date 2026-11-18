@@ -18,9 +18,10 @@ if TYPE_CHECKING:
 
 
 class EMGModel:
-    """Clean bipolar sEMG at the electrodes from muscle activity (forearm frame: z along the forearm from the
-    elbow, metres). Each muscle belly is n_sources point sources emitting band-limited noise; each electrode pole
-    sees them attenuated with distance; bipolar = pole 1 - pole 2 delayed by the conduction time between them."""
+    """Clean sEMG at the electrodes from muscle activity (forearm frame: z along the forearm from the elbow,
+    metres). Each muscle belly is n_sources point sources emitting band-limited noise; each electrode pole sees them
+    attenuated with distance; bipolar = pole 1 - pole 2 delayed by the conduction time between them; monopolar = the
+    electrode's single pole against a distant reference, or against the average of the electrodes."""
 
     def __init__(self, model: ForearmModel, subject: Subject, electrodes: Electrodes,
                  params: EMGParams | None = None) -> None:
@@ -30,11 +31,12 @@ class EMGModel:
         self.data = mujoco.MjData(model.m)              # scratch state for the per-tick geometry
         self.fat = subject.fat_mm / 1000
         self.limb_length = subject.residual_length * model.forearm_length   # shorter for amputees
+        self.monopolar, self.reference = electrodes.monopolar, electrodes.reference
 
         # Fixed per-subject (x, y) offset of every source: muscles sit slightly differently in each person.
         self.source_offset = np.random.default_rng(subject.seed).normal(
             0.0, subject.muscle_spread_mm / 1000, size=(model.nu, self.n_sources, 2))
-        self.poles = self._pole_positions(electrodes)                       # (C, 2 poles, xyz)
+        self.poles = self._pole_positions(electrodes)                       # (C, 2 or 1 poles, xyz)
 
         # Delay (s) between the two poles: the along-fibre part of the pole spacing over the conduction velocity.
         along_fibre = np.array([e.ied_mm / 1000 * np.cos(np.radians(e.orientation_deg))
@@ -47,12 +49,16 @@ class EMGModel:
 
     def generate(self, activity: MuscleActivity, rng: np.random.Generator,
                  on_tick: Callable[[int, int], None] | None = None) -> np.ndarray:
-        """(T * upsample, C) bipolar EMG in mV at self.fs, from the drive and joint angles at the control rate.
+        """(T * upsample, C) EMG in mV at self.fs, from the drive and joint angles at the control rate.
         on_tick(k, T) is called after every chunk of ticks."""
         envelope = np.clip(activity.drive, 0, 1) ** self.sub.amp_exponent     # how strongly each muscle fires
         pole_emg = self._pole_signals(envelope, activity.qpos, activity.fs, rng, on_tick=on_tick)  # every pole
-        emg = self._bipolar(pole_emg)
-        scale = self.sub.gain_mv * self.params.noise_to_mv * self.params.bipolar_scale
+        if self.monopolar:
+            emg = pole_emg - pole_emg.mean(axis=1, keepdims=True) if self.reference == "average" else pole_emg
+            scale = self.params.monopolar_scale
+        else:
+            emg, scale = self._bipolar(pole_emg), self.params.bipolar_scale
+        scale *= self.sub.gain_mv * self.params.noise_to_mv
         return (emg * scale).astype(np.float32)
 
     # -- geometry ----------------------------------------------------------------------------------------------
@@ -68,16 +74,18 @@ class EMGModel:
         return self.sub.forearm_radius_mm / 1000 * (1 - self.sub.taper * frac_along)
 
     def _pole_positions(self, electrodes: Electrodes) -> np.ndarray:
-        """(C, 2, 3) both poles of every electrode as points on the skin."""
+        """(C, 2, 3) both poles of every electrode as points on the skin; (C, 1, 3) its centre if monopolar."""
         poles = []
         for e in electrodes.electrodes:
             pole_ends = e.poles(self.skin_radius)   # [(angle, z), (angle, z)]
+            if electrodes.monopolar:
+                pole_ends = ((np.radians(e.angle_deg), e.position_cm / 100),)
             if not all(0.0 <= z <= self.limb_length for _, z in pole_ends):
                 raise ValueError(f"electrode {e.name} ({e.position_cm} cm) is off the forearm: positions must be "
                                  f"within 0-{self.limb_length * 100:.1f} cm of the elbow")
             poles += [[self.skin_radius(z) * np.cos(angle), self.skin_radius(z) * np.sin(angle), z]
                       for angle, z in pole_ends]
-        return np.array(poles).reshape(len(electrodes), 2, 3)
+        return np.array(poles).reshape(len(electrodes), -1, 3)
 
     def sources(self, d: mujoco.MjData) -> np.ndarray:
         """(nu, K, 3) source positions in the forearm frame, mapped into this subject's cross-section."""
@@ -93,7 +101,7 @@ class EMGModel:
         return np.concatenate([xy, z[..., None]], axis=-1)
 
     def gains(self, qpos: np.ndarray) -> np.ndarray:
-        """(nu * K, 2 C) gain from every source to every pole at joint state qpos: exp(-distance / decay)."""
+        """(nu * K, poles) gain from every source to every pole at joint state qpos: exp(-distance / decay)."""
         self.data.qpos[:] = qpos
         mujoco.mj_kinematics(self.model.m, self.data)
         src = self.sources(self.data).reshape(-1, 3)                         # (nu * K, 3)
@@ -106,10 +114,10 @@ class EMGModel:
 
     def _pole_signals(self, envelope: np.ndarray, qpos: np.ndarray, fs_ctrl: float, rng: np.random.Generator,
                       chunk_ticks: int = 200, on_tick: Callable[[int, int], None] | None = None) -> np.ndarray:
-        """(T * upsample, 2 C) monopolar signal at every pole: each source fires band-limited noise scaled by its
+        """(T * upsample, poles) monopolar signal at every pole: each source fires band-limited noise scaled by its
         muscle's envelope, and each pole sums the sources weighted by their gains at that tick's posture."""
         n_ticks, n_muscles = envelope.shape
-        K, n_poles = self.n_sources, 2 * len(self.poles)
+        K, n_poles = self.n_sources, self.poles.shape[0] * self.poles.shape[1]
         n_src = n_muscles * K
         upsample = int(round(self.fs / fs_ctrl))          # EMG samples per control tick
         # Band-pass shaping white noise into the EMG spectrum; its state carries across chunks.

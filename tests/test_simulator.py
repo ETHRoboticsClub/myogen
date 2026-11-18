@@ -66,6 +66,15 @@ def test_bipolar_physics():
     assert along > across and wide > along and palmar < 0.2 * along
 
 
+def test_monopolar():
+    """One pole per electrode; the common average reference leaves channels that sum to zero."""
+    ring = lambda **kw: mg.Electrodes([mg.Electrode(a, 7, ied_mm=20) for a in (90, 0, -90, 180)], **kw)
+    sim = mg.Simulator(ring(derivation="monopolar", reference="average"))
+    assert sim.emg.poles.shape == (4, 1, 3)
+    clean = sim.simulate_clean(mg.example_motion(1.0, fs=60))
+    assert np.allclose(clean.emg.sum(1), 0, atol=1e-4 * np.abs(clean.emg).max())
+
+
 def test_effort_reaches_the_drive_not_the_mechanics():
     """Effort is torque-neutral co-activation: it raises the EMG drive and leaves the motion unchanged."""
     model = ForearmModel()

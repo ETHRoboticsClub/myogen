@@ -34,7 +34,7 @@ R = TypeVar("R")
 class CleanRun:
     """A simulated motion before the recording device: the muscle activity, its clean EMG and the labels."""
     activity: MuscleActivity
-    emg: np.ndarray                   # (N, C) clean bipolar sEMG in mV at SimParams.emg.fs
+    emg: np.ndarray                   # (N, C) clean sEMG in mV at SimParams.emg.fs
     labels: dict[str, np.ndarray]
     filled_joints: list[str]
 
@@ -174,10 +174,12 @@ class Simulator:
 
     def record(self, run: CleanRun, electrodes: Electrodes | None = None) -> Recording:
         """The Recording of a CleanRun through the electrodes' device (default: the simulator's). Other
-        electrodes must have the same positions: only the device settings (gain, noise, frontend) may differ."""
+        electrodes must have the same positions and derivation: only the device settings (gain, noise, frontend)
+        may differ."""
         electrodes = electrodes or self.electrodes
-        if [(e.angle_deg, e.position_cm, e.ied_mm, e.orientation_deg) for e in electrodes.electrodes] != \
-                [(e.angle_deg, e.position_cm, e.ied_mm, e.orientation_deg) for e in self.electrodes.electrodes]:
+        place = lambda es: ([(e.angle_deg, e.position_cm, e.ied_mm, e.orientation_deg) for e in es.electrodes],
+                            es.derivation, es.reference)
+        if place(electrodes) != place(self.electrodes):
             raise ValueError("record() needs electrodes at the same positions as the simulator's")
         rng = np.random.default_rng(np.random.SeedSequence([self.subject.seed, 2]))
         joint_speed = np.abs(run.labels["qd"][:, :3]).sum(1)

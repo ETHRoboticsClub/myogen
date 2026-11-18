@@ -28,3 +28,7 @@ def test_poles_follow_orientation():
 def test_bad_device():
     with pytest.raises(ValueError, match="device"):
         mg.Electrodes([mg.Electrode(0, 5)], device="emg9000")
+    with pytest.raises(ValueError, match="derivation"):
+        mg.Electrodes([mg.Electrode(0, 5)], derivation="tripolar")
+    with pytest.raises(ValueError, match="reference"):
+        mg.Electrodes([mg.Electrode(0, 5)], derivation="monopolar", reference="ear")

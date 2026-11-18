@@ -11,7 +11,7 @@ from ..params import AcquisitionParams
 
 def record(clean: np.ndarray, fs: float, electrodes: Electrodes, joint_speed: np.ndarray, fs_motion: float,
            rng: np.random.Generator, params: AcquisitionParams | None = None) -> np.ndarray:
-    """Device output (float32) from clean bipolar sEMG (N, C) in mV at fs. joint_speed: (T,) forearm / wrist
+    """Device output (float32) from clean sEMG (N, C) in mV at fs. joint_speed: (T,) forearm / wrist
     speed (rad/s) at fs_motion, which scales the movement artifacts."""
     p = params or AcquisitionParams()
     x = (clean * channel_gains(electrodes)[None]).astype(np.float32)   # electrode contact and amplification

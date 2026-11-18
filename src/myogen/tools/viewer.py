@@ -75,10 +75,11 @@ class ReplayView:
         v, f = _frustum(skin(0.0), skin(z_end), z_end)
         self.skin = sc.add_mesh_simple("/setup/forearm/skin", v, f, color=(230, 190, 160), opacity=0.25,
                                        side="double", cast_shadow=False, receive_shadow=False)
-        poles = self.bellies.poles                                  # (C, 2, 3) in the forearm frame
+        poles = self.bellies.poles                                  # (C, 2 or 1, 3) in the forearm frame
         self.electrodes = sc.add_point_cloud("/setup/forearm/electrodes", poles.reshape(-1, 3).astype(np.float32),
                                              _rgb(self.chan_rgb[self.owner]), point_size=0.008, point_shape="circle")
-        self.pairs = sc.add_line_segments("/setup/forearm/bipolar", poles, colors=(40, 40, 40), line_width=3.0)
+        if poles.shape[1] == 2:
+            self.pairs = sc.add_line_segments("/setup/forearm/bipolar", poles, colors=(40, 40, 40), line_width=3.0)
         self.labels = [sc.add_label(f"/setup/forearm/labels/{n}", n, position=p.mean(0) * [1.18, 1.18, 1.0],
                                     font_screen_scale=0.7) for n, p in zip(electrodes.names, poles)]
         src = self.bellies.sources(model.d)

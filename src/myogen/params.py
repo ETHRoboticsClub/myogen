@@ -79,6 +79,7 @@ class EMGParams:
     # Calibration against the point-electrode model this replaces (same spatial selectivity at decay 12 mm):
     # the bipolar derivation is 1.65x stronger, and it lowers the spectrum, compensated by Subject.spectrum_hz.
     bipolar_scale: float = 0.6
+    monopolar_scale: float = 1.0          # monopolar: the point-electrode model itself
 
 
 @dataclass(frozen=True)

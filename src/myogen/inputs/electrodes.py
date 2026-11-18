@@ -9,6 +9,8 @@ from typing import Any
 import yaml
 
 DEVICES = ("raw", "myo", "otto_bock")
+DERIVATIONS = ("bipolar", "monopolar")
+REFERENCES = ("distant", "average")
 DEVICE_FS = {"myo": 200.0, "otto_bock": 100.0}
 
 
@@ -26,10 +28,10 @@ class Frontend:
 
 @dataclass
 class Electrode:
-    """One bipolar electrode, placed in anatomical terms."""
+    """One electrode, placed in anatomical terms: two poles (bipolar) or its centre (monopolar)."""
     angle_deg: float                # around the forearm: 0 radial border, +90 dorsal, -90 palmar, +-180 ulnar
     position_cm: float              # distance from the elbow along the forearm (the model's forearm is 25.8 cm)
-    ied_mm: float = 20.0            # distance between the two poles
+    ied_mm: float = 20.0            # distance between the two poles (bipolar)
     orientation_deg: float = 0.0    # pole axis: 0 along the forearm (the muscle fibres), 90 around it
     name: str = ""
 
@@ -48,6 +50,9 @@ class Electrodes:
     """The electrodes and the device recording them: the device profile, saved as YAML."""
     electrodes: list[Electrode]
     device: str = "raw"             # raw | myo | otto_bock
+    derivation: str = "bipolar"     # bipolar: pole 1 - pole 2 | monopolar: each electrode against a reference
+    reference: str = "distant"      # monopolar: distant (an electrode over bone, sees no muscle) | average (common
+                                    # average of the electrodes, as dry armbands are often re-referenced)
     fs: float = 2000.0              # output rate of the raw device (myo and otto_bock use their hardware rate)
     gain: float = 1.0               # overall amplitude: electrode contact and amplification
     noise_uv: float = 1.5           # skin + amplifier noise RMS (dry Myo electrodes: ~5)
@@ -63,6 +68,10 @@ class Electrodes:
             self.frontend = Frontend(**{k: tuple(v) if isinstance(v, list) else v for k, v in self.frontend.items()})
         if self.device not in DEVICES:
             raise ValueError(f"device must be one of {' | '.join(DEVICES)}, got {self.device!r}")
+        if self.derivation not in DERIVATIONS:
+            raise ValueError(f"derivation must be one of {' | '.join(DERIVATIONS)}, got {self.derivation!r}")
+        if self.reference not in REFERENCES:
+            raise ValueError(f"reference must be one of {' | '.join(REFERENCES)}, got {self.reference!r}")
         if not self.electrodes:
             raise ValueError("no electrodes")
         for i, e in enumerate(self.electrodes):
@@ -74,6 +83,10 @@ class Electrodes:
     @property
     def names(self) -> list[str]:
         return [e.name for e in self.electrodes]
+
+    @property
+    def monopolar(self) -> bool:
+        return self.derivation == "monopolar"
 
     @property
     def fs_out(self) -> float:
