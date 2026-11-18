@@ -45,6 +45,25 @@ Causes, from the experiments:
 - DB8 fails everywhere: its simulated rest is silent (rest / move 0.07 vs real 0.46) while real subjects keep a
   tone. That is step 4 (drive), now the largest gap.
 
+### Known placement (calibration baseline frame, no search) and per channel
+
+Turning myogen's ring to the best of 16 placements flattered it. With each real band placed by the calibration
+baseline (found from the real data alone), pattern r myogen-real is 0.12-0.28 against 0.32-0.51 real-real
+(NinaPro). Per channel, the ulnar side (225-270 deg) is nearly silent in myogen and strong in the recordings, the
+dorsal one too strong, and the radial channel (90 deg) does not follow the movement (r 0.03). The electrodes placed
+on FDS and EDC by palpation (DB2 / DB7, no placement involved) follow at r 0.29-0.45.
+
+Cause: the muscle bellies are the proximal part of each muscle's line of action, not its volume. At the band
+(proximal third), brachioradialis sits at 179 deg (dorsal; anatomically radial, ~90), ECRL at 189 (~120), FCU at
+355 (~305), and nothing covers the ulnar sector but ECU. The forearm frame itself is right (radial styloid at 93 deg,
+FCU / ECU insertions at 300 / 281). This makes step 5 (cross-sectional anatomy) the next one.
+
+Tone (step 4): a flat rest tone of 0.04 per muscle (default) brought transfer to or above the other-subject
+yardstick on EMG-FK, DB2 and DB7 (best-placement runs); a tone carried over from recent use and stronger
+co-contraction did not help. The simulated rest / move ratio stays high (0.8 vs 0.4): the movement drive is low
+(effort-minimal control engages few muscles), and MyoHand's fingers cannot hyperextend (MCP 0-1.57 rad), so
+extension movements are clipped.
+
 ## Steps
 
 ### 1. Validation metrics (dataset repo + myogen statistics)
