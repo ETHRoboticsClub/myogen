@@ -111,7 +111,7 @@ class Simulator:
         controller = MuscleController(self.model, sub.recruitment_cost, ctrl)
         activity = controller.track(q_ref, grip_torque, self.model.support(sub), fibre_rest, effort=co_activation,
                                     on_tick=report("control"))
-        activity = with_tone(activity, sub, self.params.effort)
+        activity = with_tone(activity, sub)
         start = int(ctrl.warmup_s * ctrl.fs)
         activity = activity[start:]
         # The EMG it produces at the electrodes.

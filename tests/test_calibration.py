@@ -22,7 +22,7 @@ def motion_with_rest(rest_s=2.0, move_s=4.0, fs=100.0):
     ("otto_bock", {"gain": 0.5, "noise_uv": 3.0, "smooth_hz": 2.5}),
 ])
 def test_recovers_known_device_settings(device, truth):
-    sim = mg.Simulator(device, subject=mg.Subject(rest_tone=0.0, tone_carryover=0.0))   # rest: noise only
+    sim = mg.Simulator(device, subject=mg.Subject(rest_tone=0.0))   # rest: noise only
     motion = motion_with_rest()
     target = copy.deepcopy(sim.electrodes)
     target.gain, target.noise_uv = truth["gain"], truth["noise_uv"]

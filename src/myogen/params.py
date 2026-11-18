@@ -63,7 +63,6 @@ class EffortParams:
     closed_hand_width: float = 0.05       # sharpness of that transition
     episode_s: tuple[float, float] = (0.5, 3.0)   # duration range of effort episodes
     episode_smoothing_s: float = 0.3
-    tone_time_s: float = 3.0              # how long a muscle's drive lingers as tone after it is used
 
 
 @dataclass(frozen=True)

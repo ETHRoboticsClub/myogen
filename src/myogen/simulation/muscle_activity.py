@@ -229,16 +229,12 @@ def effort(model: ForearmModel, q_ref: np.ndarray, q_rest: np.ndarray, subject: 
     return co_activation, grip_load(model, q_ref, subject, rng, p, fs)
 
 
-def with_tone(activity: MuscleActivity, subject: Subject, params: EffortParams | None = None) -> MuscleActivity:
-    """The activity with tone added to its drive: Subject.rest_tone in every muscle, plus Subject.tone_carryover of
-    the muscle's recent drive (averaged over tone_time_s, forward in time). Real recordings at rest show it: the
-    rest EMG is non-Gaussian, varies from muscle to muscle and follows the pattern of the movements just made. Like
-    the effort, it reaches the drive (the EMG), not the mechanics."""
-    p = params or EffortParams()
-    a = np.exp(-1 / (p.tone_time_s * activity.fs))
-    recent = signal.lfilter([1 - a], [1, -a], activity.drive, axis=0, zi=activity.drive[:1] * a)[0]
-    tone = subject.rest_tone + subject.tone_carryover * recent
-    return dataclasses.replace(activity, drive=np.clip(activity.drive + tone, 0, 1))
+def with_tone(activity: MuscleActivity, subject: Subject) -> MuscleActivity:
+    """The activity with Subject.rest_tone added to every muscle's drive. Real recordings at rest are not noise: the
+    rest EMG is non-Gaussian, varies from muscle to muscle and follows each electrode's movement pattern. Like the
+    effort, it reaches the drive (the EMG), not the mechanics. (A tone carried over from recent use was tried: no
+    better against real recordings.)"""
+    return dataclasses.replace(activity, drive=np.clip(activity.drive + subject.rest_tone, 0, 1))
 
 
 def joint_engagement(model: ForearmModel, q_ref: np.ndarray, q_rest: np.ndarray, p: EffortParams, fs: float

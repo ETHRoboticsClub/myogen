@@ -125,13 +125,12 @@ def test_effort_is_directional():
 
 
 def test_tone():
-    """Every muscle keeps rest_tone; a muscle just used keeps more, fading over tone_time_s."""
+    """Every muscle keeps rest_tone on top of its drive."""
     from myogen.simulation.muscle_activity import with_tone
-    T, nu = 1000, 3
+    T, nu = 100, 3
     drive = np.zeros((T, nu))
-    drive[200:300, 0] = 0.5
+    drive[20:30, 0] = 0.5
     z = np.zeros((T, nu))
     activity = MuscleActivity(100.0, z, drive, z, z, np.ones((T, nu)), z, z, z, z, np.zeros(T))
-    toned = with_tone(activity, mg.Subject(rest_tone=0.03, tone_carryover=0.2)).drive
-    assert np.allclose(toned[:200], 0.03) and np.allclose(toned[:, 1], 0.03)
-    assert toned[400, 0] > toned[900, 0] > 0.03
+    toned = with_tone(activity, mg.Subject(rest_tone=0.04)).drive
+    assert np.allclose(toned[:20], 0.04) and np.allclose(toned[25, 0], 0.54)
