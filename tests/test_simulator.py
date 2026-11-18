@@ -122,3 +122,16 @@ def test_effort_is_directional():
         co, _ = effort(model, q, q_rest, subject, np.random.default_rng(0), EffortParams(), 100.0)
         held = co[T // 2]
         assert held[agonists].min() > 2 * held[antagonists].max() > 0
+
+
+def test_tone():
+    """Every muscle keeps rest_tone; a muscle just used keeps more, fading over tone_time_s."""
+    from myogen.simulation.muscle_activity import with_tone
+    T, nu = 1000, 3
+    drive = np.zeros((T, nu))
+    drive[200:300, 0] = 0.5
+    z = np.zeros((T, nu))
+    activity = MuscleActivity(100.0, z, drive, z, z, np.ones((T, nu)), z, z, z, z, np.zeros(T))
+    toned = with_tone(activity, mg.Subject(rest_tone=0.03, tone_carryover=0.2)).drive
+    assert np.allclose(toned[:200], 0.03) and np.allclose(toned[:, 1], 0.03)
+    assert toned[400, 0] > toned[900, 0] > 0.03

@@ -109,6 +109,8 @@ def calibrate(simulator: Simulator, motions: Sequence[HandMotion], real_emgs: Se
     motions: HandMotions (what the hand did during each recording); real_emgs: (N, C) device outputs at the
     device's rate, aligned with the motions; rests: optional (N,) bool masks of rest (else motion.rest);
     fit_rotation: also fit the armband rotation, trying rotation_steps rotations around the forearm;
+    the noise level is fitted to the rest floor, which is noise plus the subject's tone (Subject.rest_tone,
+    tone_carryover): set the simulator's subject to the tone of the recorded person, or the fitted noise absorbs it;
     workers: processes simulating the motions and trying the rotations (default: up to the CPU count; 1 = in this
     process); progress: show progress bars.
     """

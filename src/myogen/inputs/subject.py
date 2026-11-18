@@ -36,6 +36,9 @@ class Subject:
     move_cocontraction: float = 0.125  # extra co-activation proportional to movement speed; [0, 0.25]
     antagonist_ratio: float = 0.25    # co-activation of the antagonists relative to the agonists; [0.1, 0.4]
     grip_load: float = 0.25           # probability of squeezing episodes while the hand is closed; [0, 0.5]
+    # Tone: real forearms are not silent at rest; the muscles keep a low drive, more in those used recently
+    rest_tone: float = 0.03           # drive every forearm muscle keeps (readiness, posture); [0.01, 0.06]
+    tone_carryover: float = 0.2       # fraction of a muscle's recent drive it keeps as tone; [0.05, 0.4]
     seed: int = 0                     # randomness of the EMG noise and of the effort episodes
 
     def to_dict(self) -> dict[str, Any]:
@@ -81,5 +84,7 @@ class Subject:
             move_cocontraction=float(rng.uniform(0.0, 0.25)),
             grip_load=float(rng.uniform(0.0, 0.5)),
             seed=int(rng.integers(2**31)),
-            antagonist_ratio=float(rng.uniform(0.1, 0.4)),   # drawn last: the other draws stay as they were
+            antagonist_ratio=float(rng.uniform(0.1, 0.4)),   # drawn after the others: their draws stay as they were
+            rest_tone=float(rng.uniform(0.01, 0.06)),
+            tone_carryover=float(rng.uniform(0.05, 0.4)),
         )

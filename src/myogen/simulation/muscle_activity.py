@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, fields
@@ -25,7 +26,7 @@ class MuscleActivity:
     """What the muscles did, per control tick (T ticks at fs). The input of the EMG step."""
     fs: float
     excitation: np.ndarray    # (T, nu) neural excitation in [0, 1]
-    drive: np.ndarray         # (T, nu) neural drive the EMG follows: smoothed excitation + effort, in [0, 1]
+    drive: np.ndarray         # (T, nu) neural drive the EMG follows: smoothed excitation + effort + tone, in [0, 1]
     effort: np.ndarray        # (T, nu) torque-neutral co-activation added to the drive
     activation: np.ndarray    # (T, nu)
     fibre_length: np.ndarray  # (T, nu) relative to the relaxed posture (1 = relaxed)
@@ -226,6 +227,18 @@ def effort(model: ForearmModel, q_ref: np.ndarray, q_rest: np.ndarray, subject: 
     co_activation = (level[:, None] * per_muscle(engaged, involvement, r)
                      + subject.move_cocontraction * per_muscle(moving, involvement, r))
     return co_activation, grip_load(model, q_ref, subject, rng, p, fs)
+
+
+def with_tone(activity: MuscleActivity, subject: Subject, params: EffortParams | None = None) -> MuscleActivity:
+    """The activity with tone added to its drive: Subject.rest_tone in every muscle, plus Subject.tone_carryover of
+    the muscle's recent drive (averaged over tone_time_s, forward in time). Real recordings at rest show it: the
+    rest EMG is non-Gaussian, varies from muscle to muscle and follows the pattern of the movements just made. Like
+    the effort, it reaches the drive (the EMG), not the mechanics."""
+    p = params or EffortParams()
+    a = np.exp(-1 / (p.tone_time_s * activity.fs))
+    recent = signal.lfilter([1 - a], [1, -a], activity.drive, axis=0, zi=activity.drive[:1] * a)[0]
+    tone = subject.rest_tone + subject.tone_carryover * recent
+    return dataclasses.replace(activity, drive=np.clip(activity.drive + tone, 0, 1))
 
 
 def joint_engagement(model: ForearmModel, q_ref: np.ndarray, q_rest: np.ndarray, p: EffortParams, fs: float
