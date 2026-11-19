@@ -25,6 +25,7 @@ ELBOW_JOINT = "elbow_flexion_r"
 INTRINSIC_PREFIXES = ("OP_", "RI", "LU_RB", "UI_UB")
 R_MODEL_REF = 0.032          # m, outermost muscle line-of-action radius in the model's proximal forearm
 GRAVITY = 9.81               # m/s^2
+GENERIC_RANGE = (0.75, 1.05)  # MuJoCo's default muscle mapping: optimal fibre lengths at the shortest/longest path
 
 
 class ForearmModel:
@@ -38,6 +39,7 @@ class ForearmModel:
             if deg is not None:
                 m.jnt_range[i] = np.radians(deg)
         self.d = mujoco.MjData(m)
+        self._set_length_ranges()
         mujoco.mj_forward(m, self.d)
         self.default_qpos = self.d.qpos.copy()
         self.joint_names = [m.joint(i).name for i in range(m.njnt)]
@@ -71,6 +73,36 @@ class ForearmModel:
             damping = _per_joint(name, self.params.passive_damping)
             if damping is not None:
                 m.dof_damping[m.jnt_dofadr[m.joint(name).id]] = damping
+
+    def _set_length_ranges(self) -> None:
+        """The length range of each muscle on MuJoCo's generic mapping (its shortest path -> 0.75 of optimal fibre
+        length, its longest -> 1.05): the shortest and longest its path gets over the joint ranges as they are now.
+        MyoSim's stored ranges no longer matched the paths (FDP5's was 5 cm off). Muscles with their own mapping (the
+        arm's, from fibre architecture) keep theirs. Random postures, plus per muscle the two postures where every
+        joint it crosses is at the end that shortens or lengthens it."""
+        m, d = self.m, self.d
+        lo, hi = m.jnt_range[:, 0].copy(), m.jnt_range[:, 1].copy()
+        limited = m.jnt_limited.astype(bool)
+        lo[~limited], hi[~limited] = 0.0, 0.0
+        mid = (lo + hi) / 2
+        rng = np.random.default_rng(0)
+        postures = [lo + rng.uniform(0, 1, m.njnt) ** rng.choice([0.3, 1.0, 3.0]) * (hi - lo)
+                    for _ in range(self.params.length_range_samples)]
+        d.qpos[:] = mid
+        mujoco.mj_fwdPosition(m, d)
+        R = np.zeros((m.nu, m.nv))
+        mujoco.mju_sparse2dense(R, d.actuator_moment, d.moment_rownnz, d.moment_rowadr, d.moment_colind)
+        lengthens = R[:, m.jnt_dofadr] > 0                                    # (nu, njnt): dL/dq > 0
+        for i in range(m.nu):
+            spans = np.abs(R[i, m.jnt_dofadr]) > 1e-6
+            postures += [np.where(spans, np.where(lengthens[i] == longest, hi, lo), mid) for longest in (False, True)]
+        lengths = np.empty((len(postures), m.nu))
+        for k, q in enumerate(postures):
+            d.qpos[:] = q
+            mujoco.mj_fwdPosition(m, d)
+            lengths[k] = d.actuator_length
+        generic = np.all(np.isclose(m.actuator_gainprm[:, :2], GENERIC_RANGE), axis=1)
+        m.actuator_lengthrange[generic] = np.column_stack([lengths.min(0), lengths.max(0)])[generic]
 
     @property
     def nu(self) -> int:
