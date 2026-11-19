@@ -228,7 +228,8 @@ def test_elbow_does_not_move_forearm_muscles():
     mujoco.mj_kinematics(model.m, d)
     flexed = g.atlas_positions(units, g.bellies(d))
     assert np.allclose(straight, flexed)
-    assert np.all(np.hypot(flexed[:, 0], flexed[:, 1]) <= g.under_fat(flexed[:, 2]) + 1e-9)
+    placed, _ = emg.placement.positions(d.qpos, np.arange(emg.pool.n_units))     # as the EMG uses them
+    assert np.all(np.hypot(placed[:, 0], placed[:, 1]) <= g.under_fat(placed[:, 2]) + 1e-9)
 
 
 def test_viewer(recording):
