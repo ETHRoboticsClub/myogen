@@ -14,7 +14,7 @@ units, mu = emg.pool, f.muscle(r["muscle"])
 own = np.flatnonzero(units.muscle == mu)
 ticks = int(r["seconds"] * 100)
 
-rates, cvs, rms, kurt, median = [], [], [], [], []
+rates, cvs = [], []
 for level in r["drives"]:
     drive = np.zeros((ticks, f.model.nu))
     drive[:, mu] = level
@@ -23,11 +23,17 @@ for level in r["drives"]:
     trains = [times[fired == u] for u in own if (fired == u).sum() > 3]
     rates.append([1 / np.median(np.diff(t)) for t in trains])           # while firing
     cvs += [np.std(np.diff(t)) / np.mean(np.diff(t)) for t in trains]
-    x = emg.generate(f.activity({r["muscle"]: level}, ticks), np.random.default_rng(0))[:, 0]
-    rms.append(np.sqrt(np.mean(x ** 2)))
-    kurt.append(stats.kurtosis(x))
-    fr, p = signal.welch(x, emg.fs, nperseg=1024)
-    median.append(fr[np.searchsorted(np.cumsum(p), p.sum() / 2)])
+
+# The EMG statistics depend on where the few units nearest the electrode sit: median over subjects (seeds).
+rms, kurt, median = (np.zeros((r["seeds"], len(r["drives"]))) for _ in range(3))
+for s in range(r["seeds"]):
+    emg_s = EMGModel(f.model, mg.Subject(seed=s), over, EMGParams())
+    for k, level in enumerate(r["drives"]):
+        x = emg_s.generate(f.activity({r["muscle"]: level}, ticks), np.random.default_rng(s))[:, 0]
+        rms[s, k], kurt[s, k] = np.sqrt(np.mean(x ** 2)), stats.kurtosis(x)
+        fr, p = signal.welch(x, emg.fs, nperseg=1024)
+        median[s, k] = fr[np.searchsorted(np.cumsum(p), p.sum() / 2)]
+rms, kurt, median = (list(np.median(v, axis=0)) for v in (rms, kurt, median))
 
 report = Report(f"Motor units of {r['muscle']} (bipolar 10 mm over it)")
 report.check("rate at recruitment, lowest (Hz)", min(min(x) for x in rates if x), *r["recruitment_rate_hz"])

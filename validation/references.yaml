@@ -56,6 +56,7 @@ motor_units:
   muscle: EDC3
   drives: [0.05, 0.1, 0.2, 0.4, 0.6, 0.8, 1.0]
   seconds: 4.0
+  seeds: 8                            # subjects (unit placements) the EMG statistics are the median over
   recruitment_rate_hz: [5, 10]        # De Luca & Hostage 2010 J Neurophysiol 104:1034
   peak_rate_hz: [20, 50]
   isi_cv: [0.1, 0.3]                  # Moritz et al. 2005 J Neurophysiol 93:2449
