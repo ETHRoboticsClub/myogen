@@ -8,8 +8,8 @@ from scipy import signal
 
 from ..inputs.subject import Subject
 from ..params import EffortParams
-from .controller import MuscleActivity
 from .kinematics import JointTrajectory
+from .muscle_solver import MuscleActivity
 from .musculoskeletal import HAND_JOINTS, ForearmModel
 
 
@@ -21,7 +21,7 @@ class EffortPlan:
 
 
 class Effort:
-    """People drive their muscles harder than the mechanical minimum the controller finds. Hand-tuned heuristics
+    """People drive their muscles harder than the mechanical minimum the MuscleSolver finds. Hand-tuned heuristics
     (no outside reference): co-activation of the muscles of the engaged joints, grip episodes on a closed hand and a
     rest tone in every muscle."""
 
@@ -29,15 +29,15 @@ class Effort:
                  fs: float = 100.0) -> None:
         self.model, self.sub, self.p, self.fs = model, subject, params or EffortParams(), fs
 
-    def plan(self, q_ref: np.ndarray, q_rest: np.ndarray, rng: np.random.Generator) -> EffortPlan:
-        """The effort over the reference trajectory q_ref (T, nq), relaxed at q_rest."""
-        return EffortPlan(*effort(self.model, q_ref, q_rest, self.sub, rng, self.p, self.fs))
+    def plan(self, trajectory: JointTrajectory, rng: np.random.Generator) -> EffortPlan:
+        """The effort over the trajectory: where the joints are engaged (moving or held away from rest)."""
+        return EffortPlan(*effort(self.model, trajectory.q_ref, trajectory.q_rest, self.sub, rng, self.p, self.fs))
 
     def grip_torque(self, plan: EffortPlan, trajectory: JointTrajectory) -> np.ndarray:
         """(T, nv) torques opposing finger flexion while squeezing."""
         return self.model.grip_torque(plan.grip, finger_closure(trajectory.hand, self.p.pip_closed_rad))
 
-    def apply(self, activity: MuscleActivity, plan: EffortPlan) -> MuscleActivity:
+    def add_to_drive(self, activity: MuscleActivity, plan: EffortPlan) -> MuscleActivity:
         """The activity with the co-activation and Subject.rest_tone added to the drive. Real recordings at rest are
         not noise: the rest EMG is non-Gaussian, varies from muscle to muscle and follows each electrode's movement
         pattern. (A tone carried over from recent use was tried: no better against real recordings.)"""

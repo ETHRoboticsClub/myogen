@@ -1,7 +1,8 @@
 import numpy as np
 from common import REFS, Forearm, Report
 
-from myogen.simulation.controller import MuscleController
+from myogen.simulation.kinematics import JointTrajectory
+from myogen.simulation.muscle_solver import MuscleSolver
 
 r = REFS["activation"]
 f = Forearm()
@@ -15,14 +16,14 @@ def hold(q: np.ndarray, load: dict[str, float]) -> tuple[np.ndarray, float, floa
     q_ref, torque = np.tile(q, (T, 1)), np.zeros((T, m.nv))
     for joint, nm in load.items():
         torque[:, f.dof(joint)] = nm
-    fibre_rest = f.model.prepare(f.subject, q, q)            # springs relax the hand at q
-    a = MuscleController(f.model, f.subject.recruitment_cost).track(q_ref, torque, np.zeros(m.nv), fibre_rest)
+    held = JointTrajectory(q_ref, q, q_ref[:, f.model.hand_qpos], warmup=0)     # relaxed at q: springs hold it there
+    a = MuscleSolver(f.model, f.subject).solve(held, torque)
     s = slice(-r["settle"], None)
     return (a.activation[s].mean(0), float(np.abs(a.reserve[s]).max()),
             float(np.degrees(np.abs(a.q[s] - q_ref[s]).max())))
 
 
-report = Report("Muscle controller: isometric loads and relaxed postures")
+report = Report("Muscle solver: isometric loads and relaxed postures")
 for name, joints in r["rest_postures"].items():
     q = f.q.copy()
     for joint, deg in joints.items():

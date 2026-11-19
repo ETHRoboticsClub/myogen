@@ -8,11 +8,11 @@ from scipy import signal
 from ..inputs.electrodes import Electrodes
 from ..inputs.subject import Subject
 from ..params import EMGParams
-from .controller import MuscleActivity
 from .geometry import ForearmGeometry
 from .montage import Montage
 from .motor_units import MotorUnitPool, Spikes, UnitPlacement
 from .muap import muap_model
+from .muscle_solver import MuscleActivity
 from .musculoskeletal import ForearmModel
 
 

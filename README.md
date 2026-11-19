@@ -30,7 +30,7 @@ src/myogen/
   inputs/        motion, subject, electrodes
   simulation/    one block per step, each with its input and output:
                    kinematics      HandMotion → JointTrajectory
-                   controller      JointTrajectory → MuscleActivity (least squares on musculoskeletal)
+                   muscle_solver   JointTrajectory → MuscleActivity (least squares on musculoskeletal)
                    effort          + co-activation, grip and rest tone (heuristics)
                    emg             MuscleActivity → clean EMG, through:
                      motor_units     drive → Spikes; where each unit sits (UnitPlacement)

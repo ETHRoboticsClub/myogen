@@ -20,10 +20,10 @@ from .params import SimParams
 from .progress import ProgressFn, RunProgress
 from .recording import Recording
 from .simulation import acquisition
-from .simulation.controller import MuscleActivity, MuscleController
 from .simulation.effort import Effort
 from .simulation.emg import EMGModel
 from .simulation.kinematics import JointTrajectory, Kinematics
+from .simulation.muscle_solver import MuscleActivity, MuscleSolver
 from .simulation.musculoskeletal import ForearmModel
 
 log = logging.getLogger(__name__)
@@ -33,7 +33,7 @@ R = TypeVar("R")
 
 
 @dataclass
-class CleanRun:
+class Simulation:
     """A simulated motion before the recording device: the muscle activity, its clean EMG and the labels."""
     activity: MuscleActivity
     emg: np.ndarray                   # (N, C) clean sEMG in mV at SimParams.emg.fs
@@ -42,10 +42,11 @@ class CleanRun:
 
 
 class Simulator:
-    """Movement in, sEMG recording out: run() = record(simulate_clean()). The blocks, each with its input and output:
+    """Movement in, sEMG recording out: run() = record(simulate()). The blocks, each with its input and output:
 
-    HandMotion -> Kinematics -> JointTrajectory -> MuscleController (+ Effort) -> MuscleActivity -> EMGModel
-    -> clean EMG at the electrodes -> record (acquisition: the device) -> Recording."""
+    simulate():  HandMotion -> Kinematics -> JointTrajectory -> MuscleSolver -> MuscleActivity -> Effort (adds to
+                 the drive) -> EMGModel -> clean EMG at the electrodes: a Simulation
+    record():    Simulation -> the device (acquisition) -> Recording"""
 
     def __init__(self, electrodes: Electrodes | str = "myo", subject: Subject | None = None,
                  params: SimParams | None = None) -> None:
@@ -57,6 +58,7 @@ class Simulator:
         self.model = ForearmModel(params=self.params.musculoskeletal)
         self.model.scale_strength(self.subject.muscle_forces(self.model.nu))
         self.kinematics = Kinematics(self.model, self.subject, self.params.control)
+        self.muscles = MuscleSolver(self.model, self.subject, self.params.control)
         self.effort = Effort(self.model, self.subject, self.params.effort, self.params.control.fs)
         self.emg = EMGModel(self.model, self.subject, self.electrodes, self.params.emg)
 
@@ -84,44 +86,37 @@ class Simulator:
         return self._map(Simulator._run_one, motion, workers, progress)
 
     @overload
-    def simulate_clean(self, motion: MotionLike, *, workers: int | None = ...,  # type: ignore[overload-overlap]
-                       progress: bool = ...) -> CleanRun: ...
+    def simulate(self, motion: MotionLike, *, workers: int | None = ...,  # type: ignore[overload-overlap]
+                 progress: bool = ...) -> Simulation: ...
     @overload
-    def simulate_clean(self, motion: Sequence[MotionLike], *, workers: int | None = ..., progress: bool = ...
-                       ) -> list[CleanRun]: ...
+    def simulate(self, motion: Sequence[MotionLike], *, workers: int | None = ..., progress: bool = ...
+                 ) -> list[Simulation]: ...
 
-    def simulate_clean(self, motion: MotionLike | Sequence[MotionLike], *, workers: int | None = None,
-                       progress: bool = False) -> CleanRun | list[CleanRun]:
-        """The expensive part: movement -> muscle activity -> clean EMG at the electrodes. Returns a CleanRun, which
-        record() turns into a Recording (calibrate() records one CleanRun with many device settings). A list of
-        motions runs as in run()."""
-        return self._map(Simulator._clean_one, motion, workers, progress)
+    def simulate(self, motion: MotionLike | Sequence[MotionLike], *, workers: int | None = None,
+                 progress: bool = False) -> Simulation | list[Simulation]:
+        """The expensive part: movement -> muscle activity -> clean EMG at the electrodes. Returns a Simulation,
+        which record() turns into a Recording (calibrate() records one Simulation with many device settings). A list
+        of motions runs as in run()."""
+        return self._map(Simulator._simulate_one, motion, workers, progress)
 
     def _run_one(self, motion: MotionLike, on_progress: ProgressFn | None = None) -> Recording:
-        return self.record(self._clean_one(motion, on_progress))
+        return self.record(self._simulate_one(motion, on_progress))
 
-    def _clean_one(self, motion: MotionLike, on_progress: ProgressFn | None = None) -> CleanRun:
-        """simulate_clean() of one motion; on_progress(stage, done, total) is called as it goes."""
-        report = (lambda stage: None) if on_progress is None else \
-            (lambda stage: lambda k, n: on_progress(stage, k + 1 if stage == "control" else k, n))
+    def _simulate_one(self, motion: MotionLike, on_progress: ProgressFn | None = None) -> Simulation:
+        """simulate() of one motion; on_progress(stage, done, total) is called as it goes."""
         motion = motion if isinstance(motion, HandMotion) else HandMotion.load(motion, read_motion_file)
-        sub, ctrl = self.subject, self.params.control
-        effort_rng = np.random.default_rng(np.random.SeedSequence([sub.seed, 0]))
         t0 = time.time()
         log.info(f"simulating {motion.duration:.1f} s: {len(self.electrodes)} electrodes ({self.electrodes.device})")
 
-        trajectory = self.kinematics(motion.resampled(ctrl.fs))
-        plan = self.effort.plan(trajectory.q_ref, trajectory.q_rest, effort_rng)
-        fibre_rest = self.model.prepare(sub, trajectory.q_ref[0], trajectory.q_rest)
-        controller = MuscleController(self.model, sub.recruitment_cost, ctrl)
-        grip_torque = self.effort.grip_torque(plan, trajectory)
-        activity = controller.track(trajectory.q_ref, grip_torque, self.model.support(sub), fibre_rest,
-                                    on_tick=report("control"))
-        activity = self.effort.apply(activity, plan)[trajectory.warmup:]
-        run = CleanRun(activity, self.emg.generate(activity, self._emg_rng(), on_tick=report("emg")),
-                       self._labels(activity, trajectory, plan.grip), list(motion.filled))
+        trajectory = self.kinematics(motion.resampled(self.params.control.fs))
+        effort = self.effort.plan(trajectory, self._rng(0))
+        activity = self.muscles.solve(trajectory, self.effort.grip_torque(effort, trajectory),
+                                      on_tick=_ticker(on_progress, "control", first=1))
+        activity = self.effort.add_to_drive(activity, effort)[trajectory.warmup:]
+        emg = self.emg.generate(activity, self._rng(1), on_tick=_ticker(on_progress, "emg"))
+
         log.info(f"done in {time.time() - t0:.0f} s")
-        return run
+        return Simulation(activity, emg, self._labels(activity, trajectory, effort.grip), list(motion.filled))
 
     def _map(self, simulate: Callable[[Simulator, MotionLike, ProgressFn | None], R],
              motions: MotionLike | Sequence[MotionLike], workers: int | None, progress: bool) -> R | list[R]:
@@ -172,12 +167,12 @@ class Simulator:
                 raise
         return results
 
-    def regenerate(self, run: CleanRun) -> CleanRun:
-        """The CleanRun of the same muscle activity at this simulator's electrodes (re-runs only the EMG step)."""
-        return CleanRun(run.activity, self.emg.generate(run.activity, self._emg_rng()), run.labels, run.filled_joints)
+    def simulate_emg(self, run: Simulation) -> Simulation:
+        """The same muscle activity at this simulator's electrodes (re-runs only the EMG step)."""
+        return Simulation(run.activity, self.emg.generate(run.activity, self._rng(1)), run.labels, run.filled_joints)
 
-    def record(self, run: CleanRun, electrodes: Electrodes | None = None) -> Recording:
-        """The Recording of a CleanRun through the electrodes' device (default: the simulator's). Other
+    def record(self, run: Simulation, electrodes: Electrodes | None = None) -> Recording:
+        """The Recording of a Simulation through the electrodes' device (default: the simulator's). Other
         electrodes must have the same positions and derivation: only the device settings (gain, noise, frontend)
         may differ."""
         electrodes = electrodes or self.electrodes
@@ -185,7 +180,7 @@ class Simulator:
                             es.derivation, es.reference)
         if place(electrodes) != place(self.electrodes):
             raise ValueError("record() needs electrodes at the same positions as the simulator's")
-        rng = np.random.default_rng(np.random.SeedSequence([self.subject.seed, 2]))
+        rng = self._rng(2)
         joint_speed = np.abs(run.labels["qd"][:, :3]).sum(1)
         fs_labels = self.params.control.fs
         emg = acquisition.record(run.emg, self.params.emg.fs, electrodes, joint_speed, fs_labels, rng,
@@ -227,9 +222,15 @@ class Simulator:
                 "activation": activity.activation, "reserve": activity.reserve,
                 "fibre_length": activity.fibre_length, "effort": activity.effort, "grip_load": grip[start:]}
 
-    def _emg_rng(self) -> np.random.Generator:
-        """The EMG step's randomness: the same for every electrode set, so re-runs differ only by geometry."""
-        return np.random.default_rng(np.random.SeedSequence([self.subject.seed, 1]))
+    def _rng(self, stage: int) -> np.random.Generator:
+        """The randomness of a stage (0 effort, 1 EMG, 2 device), from the subject's seed: the same for every
+        electrode set, so re-runs differ only by geometry."""
+        return np.random.default_rng(np.random.SeedSequence([self.subject.seed, stage]))
+
+
+def _ticker(on_progress: ProgressFn | None, stage: str, first: int = 0) -> Callable[[int, int], None] | None:
+    """A block's on_tick(k, n) reporting to on_progress(stage, done, total); first: ticks counted from 0 or 1."""
+    return None if on_progress is None else lambda k, n: on_progress(stage, k + first, n)
 
 
 # -- worker processes for batches of motions ---------------------------------------------------------------------

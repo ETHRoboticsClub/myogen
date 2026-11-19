@@ -24,9 +24,9 @@ class MusculoskeletalParams:
 
 @dataclass(frozen=True)
 class ControlParams:
-    """The reference trajectory and how the muscles track it (simulation/controller.py)."""
+    """The reference trajectory and how the muscles track it (simulation/muscle_solver.py)."""
     fs: float = 100.0                     # Hz, control rate and label rate
-    warmup_s: float = 0.5                 # first posture held so the controller settles before recording
+    warmup_s: float = 0.5                 # first posture held so the muscle solver settles before recording
     min_rest_s: float = 1.0               # rest needed in a motion to take its median posture as the relaxed one
     joint_limit_tolerance: float = 0.05   # rad beyond a joint limit before a warning (angles are clipped)
     pd_bandwidth_hz: float = 8.0          # PD tracking bandwidth
@@ -43,7 +43,7 @@ class ControlParams:
     weak_reserve_cost: float = 0.1
     weak_reserve_max_nm: float = 3.0
     max_speed: float = 200.0              # rad/s: beyond this the simulation has diverged (reset to the reference)
-    drive_lowpass_hz: float = 4.0         # neural drive smoothing (the controller's fast corrections are artifacts)
+    drive_lowpass_hz: float = 4.0         # neural drive smoothing (the solver's fast corrections are artifacts)
 
 
 @dataclass(frozen=True)

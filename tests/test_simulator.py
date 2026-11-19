@@ -5,10 +5,11 @@ import pytest
 
 import myogen as mg
 from myogen.params import EMGParams
-from myogen.simulation.controller import MuscleActivity, MuscleController
 from myogen.simulation.effort import Effort, EffortPlan, effort
 from myogen.simulation.emg import EMGModel
 from myogen.simulation.geometry import ForearmGeometry
+from myogen.simulation.kinematics import JointTrajectory
+from myogen.simulation.muscle_solver import MuscleActivity, MuscleSolver
 from myogen.simulation.musculoskeletal import ForearmModel
 
 
@@ -106,7 +107,7 @@ def test_monopolar():
     ring = lambda **kw: mg.Electrodes([mg.Electrode(a, 7, ied_mm=20) for a in (90, 0, -90, 180)], **kw)
     sim = mg.Simulator(ring(derivation="monopolar", reference="average"))
     assert sim.emg.poles.shape == (4, 1, 3)
-    clean = sim.simulate_clean(mg.example_motion(1.0, fs=60))
+    clean = sim.simulate(mg.example_motion(1.0, fs=60))
     assert np.allclose(clean.emg.sum(1), 0, atol=1e-4 * np.abs(clean.emg).max())
 
 
@@ -115,11 +116,10 @@ def test_effort_reaches_the_drive_not_the_mechanics():
     model = ForearmModel()
     T = 150
     q = np.tile(model.default_qpos, (T, 1))
-    model.prepare(mg.Subject(), q[0], q[0])
     co = np.zeros((T, model.nu))
     co[:, model.muscle_names.index("EDC3_r")] = 0.2
-    plain = MuscleController(model).track(q, np.zeros((T, model.m.nv)), np.zeros(model.m.nv), 1.0)
-    effortful = Effort(model, mg.Subject()).apply(plain, EffortPlan(co, np.zeros(T)))
+    plain = MuscleSolver(model, mg.Subject()).solve(JointTrajectory(q, q[0], q[:, model.hand_qpos], warmup=0))
+    effortful = Effort(model, mg.Subject()).add_to_drive(plain, EffortPlan(co, np.zeros(T)))
     assert np.array_equal(plain.q, effortful.q)
     i = model.muscle_names.index("EDC3_r")
     assert effortful.drive[:, i].min() >= 0.2 > plain.drive[:, i].max()
@@ -150,7 +150,7 @@ def test_tone():
     drive[20:30, 0] = 0.5
     z = np.zeros((T, nu))
     activity = MuscleActivity(100.0, z, drive, z, z, np.ones((T, nu)), z, z, z, z, np.zeros(T))
-    toned = Effort(ForearmModel(), mg.Subject(rest_tone=0.04)).apply(activity, EffortPlan(z, np.zeros(T))).drive
+    toned = Effort(ForearmModel(), mg.Subject(rest_tone=0.04)).add_to_drive(activity, EffortPlan(z, np.zeros(T))).drive
     assert np.allclose(toned[:20], 0.04) and np.allclose(toned[25, 0], 0.54)
 
 

@@ -28,7 +28,7 @@ def test_recovers_known_device_settings(device, truth):
     target.gain, target.noise_uv = truth["gain"], truth["noise_uv"]
     if "smooth_hz" in truth:
         target.frontend.smooth_hz = truth["smooth_hz"]
-    real = sim.record(sim.simulate_clean(motion), target).emg
+    real = sim.record(sim.simulate(motion), target).emg
     cal = mg.calibrate(sim, [motion], [real])
     for name, value in truth.items():
         assert cal.fitted[name][1] == pytest.approx(value, rel=0.2), (name, cal.fitted)
@@ -41,7 +41,7 @@ def test_recovers_armband_rotation():
     sim = mg.Simulator("myo")
     motion = motion_with_rest()
     truth = sim.with_electrodes(rotated(sim.electrodes, 90.0))
-    real = truth.record(truth.simulate_clean(motion)).emg
+    real = truth.record(truth.simulate(motion)).emg
     cal = mg.calibrate(sim, [motion], [real], fit_rotation=True, rotation_steps=8)
     assert cal.fitted["rotation_deg"][1] == pytest.approx(90.0)
     assert cal.report["channel_correlation"]["after"] > cal.report["channel_correlation"]["before"]

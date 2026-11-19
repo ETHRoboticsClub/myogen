@@ -137,10 +137,16 @@ class ForearmModel:
         """Current fibre lengths (m): path length minus tendon slack (rigid tendon)."""
         return (self.d if d is None else d).actuator_length - self.tendon_slack
 
+    def fibre_lengths_at(self, qpos: np.ndarray) -> np.ndarray:
+        """Fibre lengths (m) at joint state qpos (moves the model there)."""
+        self.set_pose(qpos)
+        return np.maximum(self.fibre_lengths(), 1e-3)
+
     # -- loads besides the muscles -----------------------------------------------------------------------------
 
-    def prepare(self, subject: Subject, q_start: np.ndarray, q_rest: np.ndarray) -> np.ndarray:
-        """Set gravity and the passive joint springs for a run. Returns the fibre lengths at the relaxed posture."""
+    def set_environment(self, subject: Subject, q_start: np.ndarray, q_rest: np.ndarray) -> None:
+        """The physics of a run besides the muscles: gravity (perpendicular to the forearm at q_start when it lies on
+        an armrest) and passive joint springs that hold the hand at the relaxed posture q_rest without muscle drive."""
         self.set_pose(q_start)
         gravity = np.asarray(subject.gravity, float)
         gravity = gravity / np.linalg.norm(gravity)
@@ -152,7 +158,6 @@ class ForearmModel:
             gravity /= np.linalg.norm(gravity)
         self.m.opt.gravity[:] = GRAVITY * gravity
         self._set_passive_springs(q_rest, subject.passive_stiffness)
-        return np.maximum(self.fibre_lengths(), 1e-3)
 
     def _set_passive_springs(self, q_rest: np.ndarray, scale: float) -> None:
         """Joint springs whose equilibrium is q_rest: a relaxed hand rests there without muscle drive (each spring's

@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from ..inputs.motion import HandMotion
     from ..inputs.subject import Subject
     from ..params import SimParams
-    from ..simulator import CleanRun, Simulator
+    from ..simulator import Simulation, Simulator
 
 Stats = dict[str, Any]       # statistic -> value (None where a recording has none)
 
@@ -124,7 +124,7 @@ def _calibrate(simulator: Simulator, motions: Sequence[HandMotion], real_emgs: S
                workers: int | None, progress: bool, bars: Progress) -> Calibration:
     device = simulator.electrodes.device
     fs = simulator.electrodes.fs_out
-    runs = simulator.simulate_clean(list(motions), workers=workers, progress=progress)
+    runs = simulator.simulate(list(motions), workers=workers, progress=progress)
     rests = rests or [m.rest if m.rest is not None else None for m in motions]
     real = _pooled([statistics(x, fs, device, r) for x, r in zip(real_emgs, rests)])
     rotation, match_before = 0.0, _match(simulator, runs, real_emgs)
@@ -134,7 +134,7 @@ def _calibrate(simulator: Simulator, motions: Sequence[HandMotion], real_emgs: S
                                                                 for k in range(rotation_steps)], workers, search)
         rotation = max(scores, key=lambda delta: scores[delta])
         simulator = simulator.with_electrodes(rotated(simulator.electrodes, rotation))
-        runs = [simulator.regenerate(run) for run in runs]
+        runs = [simulator.simulate_emg(run) for run in runs]
         search.close()
 
     # Every device setting tried: before and after, and each step of each bisection.
@@ -180,7 +180,7 @@ def rotated(electrodes: Electrodes, delta_deg: float) -> Electrodes:
     return out
 
 
-def _rotation_scores(simulator: Simulator, runs: Sequence[CleanRun], real_emgs: Sequence[np.ndarray],
+def _rotation_scores(simulator: Simulator, runs: Sequence[Simulation], real_emgs: Sequence[np.ndarray],
                      rotations: list[float], workers: int | None, search: Counter) -> dict[float, float]:
     """rotation -> channel correlation of the runs re-generated with the electrodes rotated by it, in `workers`
     processes (each re-runs only the EMG step: the runs' muscle activity is shared)."""
@@ -209,16 +209,16 @@ def _rotation_scores(simulator: Simulator, runs: Sequence[CleanRun], real_emgs: 
     return {delta: scores[delta] for delta in rotations}
 
 
-def _rotation_score(simulator: Simulator, runs: Sequence[CleanRun], real_emgs: Sequence[np.ndarray],
+def _rotation_score(simulator: Simulator, runs: Sequence[Simulation], real_emgs: Sequence[np.ndarray],
                     delta: float) -> float:
     candidate = simulator.with_electrodes(rotated(simulator.electrodes, delta))
-    return _match(candidate, [candidate.regenerate(run) for run in runs], real_emgs)
+    return _match(candidate, [candidate.simulate_emg(run) for run in runs], real_emgs)
 
 
-_worker: tuple[Simulator, list[CleanRun], list[np.ndarray]] | None = None    # a rotation worker's inputs
+_worker: tuple[Simulator, list[Simulation], list[np.ndarray]] | None = None    # a rotation worker's inputs
 
 
-def _worker_init(electrodes: Electrodes, subject: Subject, params: SimParams, runs: list[CleanRun],
+def _worker_init(electrodes: Electrodes, subject: Subject, params: SimParams, runs: list[Simulation],
                  real_emgs: list[np.ndarray]) -> None:
     from ..simulator import Simulator
     global _worker
@@ -230,7 +230,7 @@ def _worker_score(delta: float) -> float:
     return _rotation_score(*_worker, delta)
 
 
-def _match(simulator: Simulator, runs: Sequence[CleanRun], real_emgs: Sequence[np.ndarray]) -> float:
+def _match(simulator: Simulator, runs: Sequence[Simulation], real_emgs: Sequence[np.ndarray]) -> float:
     """Mean per-channel envelope correlation between the simulated runs and the real recordings."""
     fs, device = simulator.electrodes.fs_out, simulator.electrodes.device
     return float(np.mean([channel_correlation(x, simulator.record(run).emg, fs, device)

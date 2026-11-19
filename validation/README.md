@@ -12,7 +12,7 @@ Run from this folder with the project's environment:
 |---|---|---|
 | `01_muscle_actions.py` | musculoskeletal model | Textbook action of every muscle (sign and size of its moment arm). Joint limits vs. the functional range of motion (Ryu 1991, Morrey 1981). |
 | `02_strength.py` | musculoskeletal model | Maximal isometric wrist moments (Delp et al. 1996). |
-| `03_activations.py` | muscle controller (least squares) | Isometric loads: agonists answer, reserve torques stay small, the posture holds. Preferred directions fall in their anatomical quadrant. A relaxed hand stays silent. |
+| `03_activations.py` | muscle solver (least squares) | Isometric loads: agonists answer, reserve torques stay small, the posture holds. Preferred directions fall in their anatomical quadrant. A relaxed hand stays silent. |
 | `04_motor_units.py` | recruitment and rate coding | Firing rates, ISI variability, recruitment range (Fuglevand 1993, De Luca 2010). RMS vs. force exponent (Lawrence & De Luca 1983). Kurtosis vs. force (Nazarpour 2013). Spectrum. |
 | `05_muap_physics.py` | MUAP to electrode | Biphasic engine vs. the layered volume conductor. `tests/test_volume_conductor.py` checks the volume conductor against the analytic half-space. |
 | `06_hdemg_spatial.py` | MUAP to electrode, end to end | Correlation vs. distance on an 8x8 grid (10 mm spacing), real Hyser HD-EMG (PhysioNet, downloaded once into `~/.cache/myogen/hyser`). |

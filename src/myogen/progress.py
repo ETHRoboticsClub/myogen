@@ -20,7 +20,7 @@ from rich.text import Text
 ProgressFn = Callable[[str, int, int], None]      # (stage, done, total)
 
 STAGES = {"control": "muscles", "emg": "EMG"}     # simulation stage -> what the row shows
-# Share of a motion's simulation time per stage (profiled: the controller ~65%, the EMG ~35%), so one bar spans both.
+# Share of a motion's simulation time per stage (profiled: the muscle solver ~65%, the EMG ~35%), so one bar spans both.
 SPAN = {"control": (0.0, 0.65), "emg": (0.65, 1.0)}
 
 _shown: Progress | None = None                    # the display on screen, which nested calls add their rows to

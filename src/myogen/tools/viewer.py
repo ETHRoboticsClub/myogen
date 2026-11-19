@@ -128,7 +128,7 @@ class ReplayView:
         """Gravity arrow (the camera's up is against it), camera placement, and the armrest if supported."""
         model, sub = self.model, self.rec.subject
         q0 = self.q[0]
-        model.prepare(sub, q0, q0)                                  # sets the (armrest-projected) gravity
+        model.set_environment(sub, q0, q0)                          # sets the (armrest-projected) gravity
         gdir = model.m.opt.gravity / np.linalg.norm(model.m.opt.gravity)
         self.down = gdir
         model.set_pose(q0)

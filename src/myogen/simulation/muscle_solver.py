@@ -9,7 +9,9 @@ import numpy as np
 from scipy import signal
 from scipy.optimize import lsq_linear
 
+from ..inputs.subject import Subject
 from ..params import ControlParams
+from .kinematics import JointTrajectory
 from .musculoskeletal import ForearmModel
 
 log = logging.getLogger(__name__)
@@ -37,18 +39,26 @@ class MuscleActivity:
                                          for f in fields(self)[1:]))
 
 
-# -- the mechanical minimum: activations that reproduce the motion (computed muscle control) -----------------------
+class MuscleSolver:
+    """JointTrajectory -> MuscleActivity: the muscle excitations that make the model follow the trajectory, at the
+    mechanical minimum (computed muscle control, as OpenSim's CMC). Every control tick:
+      1. the joint accelerations that track the reference (feed-forward + PD feedback on the error),
+      2. the joint torques for them (inverse dynamics),
+      3. the muscle activations that produce those torques with the least effort (bounded least squares; small
+         reserve torques stand in for what the muscles cannot do),
+      4. the excitations that reach those activations (inverse activation dynamics),
+    then the model steps forward with those excitations, so the motion is the one the muscles produce."""
 
-class MuscleController:
-    def __init__(self, model: ForearmModel, muscle_cost: list[float] | np.ndarray | None = None,
-                 params: ControlParams | None = None) -> None:
-        """muscle_cost: (nu,) relative recruitment cost (None = equal)."""
+    def __init__(self, model: ForearmModel, subject: Subject, params: ControlParams | None = None) -> None:
+        """subject: its recruitment cost per muscle, its armrest (support) and the run's physics."""
         m = model.m
         self.p = p = params or ControlParams()
-        self.model, self.m, self.d, self.fs = model, m, model.d, p.fs
+        self.model, self.subject, self.m, self.d, self.fs = model, subject, m, model.d, p.fs
         self.steps_per_tick = int(round(1 / (self.fs * m.opt.timestep)))
         self.dt = m.opt.timestep * self.steps_per_tick
-        self.cost = np.ones(m.nu) if muscle_cost is None else np.asarray(muscle_cost)
+        cost = subject.recruitment_cost
+        self.cost = np.ones(m.nu) if cost is None else np.asarray(cost)
+        self.support = model.support(subject)
         self.tau_act, self.tau_deact = m.actuator_dynprm[:, 0], m.actuator_dynprm[:, 1]
 
         # Reserve torques: what the muscles cannot do (the thumb lacks its intrinsic muscles: cheaper, larger ones).
@@ -66,14 +76,16 @@ class MuscleController:
         self.R = np.zeros((m.nu, m.nv))
         self.M = np.zeros((m.nv, m.nv))
 
-    def track(self, q_ref: np.ndarray, load_torque: np.ndarray, support: np.ndarray, fibre_rest: np.ndarray,
+    def solve(self, trajectory: JointTrajectory, external_torque: np.ndarray | None = None,
               on_tick: Callable[[int, int], None] | None = None) -> MuscleActivity:
-        """Drive the model along q_ref (T, nq), starting at q_ref[0].
-
-        load_torque: (T, nv) external torques (Nm); support: (nv,) fraction of the static torque carried by an
-        armrest; fibre_rest: (nu,) fibre lengths at the relaxed posture. on_tick(k, T) is called after every tick.
-        """
-        m, d, T = self.m, self.d, len(q_ref)
+        """The muscle activity that moves the model along the trajectory, from its first posture.
+        external_torque: (T, nv) torques on the joints besides the muscles (Nm), e.g. a grip; on_tick(k, T) is
+        called after every tick."""
+        q_ref, m, d = trajectory.q_ref, self.m, self.d
+        T = len(q_ref)
+        self.model.set_environment(self.subject, q_ref[0], trajectory.q_rest)
+        fibre_rest = self.model.fibre_lengths_at(trajectory.q_rest)
+        load_torque = np.zeros((T, m.nv)) if external_torque is None else external_torque
         qd_ref = np.gradient(q_ref, 1 / self.fs, axis=0)
         qdd_ref = np.gradient(qd_ref, 1 / self.fs, axis=0)
         self.model.set_pose(q_ref[0])
@@ -89,13 +101,11 @@ class MuscleController:
                 self._recover(q_ref[k], act_ok, k)
             act_ok = d.act.copy()
             try:
-                u, reserve, out["residual"][k] = self._control(q_ref[k], qd_ref[k], qdd_ref[k], load_torque[k],
-                                                               support)
+                u, reserve, out["residual"][k] = self._excitations(q_ref[k], qd_ref[k], qdd_ref[k], load_torque[k])
             except np.linalg.LinAlgError:
                 out["recovered"][k] = True
                 self._recover(q_ref[k], act_ok, k)
-                u, reserve, out["residual"][k] = self._control(q_ref[k], qd_ref[k], qdd_ref[k], load_torque[k],
-                                                               support)
+                u, reserve, out["residual"][k] = self._excitations(q_ref[k], qd_ref[k], qdd_ref[k], load_torque[k])
             # Step the model forward with them: the resulting motion is physically consistent.
             out["qpos"][k] = d.qpos
             d.ctrl[:] = u
@@ -111,9 +121,10 @@ class MuscleController:
         out["drive"] = self._neural_drive(out["excitation"])
         return MuscleActivity(fs=self.fs, **out)
 
-    def _control(self, q_ref: np.ndarray, qd_ref: np.ndarray, qdd_ref: np.ndarray, load: np.ndarray,
-                 support: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
-        """(excitation, reserve torque, residual) for the next tick; applies load + support + reserve torques."""
+    def _excitations(self, q_ref: np.ndarray, qd_ref: np.ndarray, qdd_ref: np.ndarray, load: np.ndarray
+                     ) -> tuple[np.ndarray, np.ndarray, float]:
+        """(excitation, reserve torque, residual) for the next tick (steps 1-4); applies the external torques, the
+        armrest's support and the reserve torques to the model."""
         m, d = self.m, self.d
 
         # Desired acceleration: feed-forward + PD feedback on the reference.
@@ -123,7 +134,7 @@ class MuscleController:
         mujoco.mj_inverse(m, d)
         mujoco.mju_sparse2dense(self.R, d.actuator_moment, d.moment_rownnz, d.moment_rowadr, d.moment_colind)
         gain, bias = self._muscle_gain_bias()
-        load = load + support * (d.qfrc_bias - self.R.T @ bias - d.qfrc_spring)
+        load = load + self.support * (d.qfrc_bias - self.R.T @ bias - d.qfrc_spring)
 
         # Muscle activations that produce those torques.
         a_des, reserve, residual = self._solve_activation(d.qfrc_inverse - load, gain, bias)
@@ -177,7 +188,7 @@ class MuscleController:
         return np.clip(act + (a_des - act) / k, 0.0, 1.0)
 
     def _neural_drive(self, excitation: np.ndarray) -> np.ndarray:
-        """(T, nu) drive the EMG follows: smoothed excitation (the controller's fast corrections are a simulation
+        """(T, nu) drive the EMG follows: smoothed excitation (the solver's fast corrections are a simulation
         artifact; neural drive is < ~5 Hz)."""
         drive_lp = signal.butter(2, self.p.drive_lowpass_hz, fs=self.fs, output="sos")
         smooth = signal.sosfiltfilt(drive_lp, excitation, axis=0) if len(excitation) > 15 else excitation
