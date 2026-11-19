@@ -14,6 +14,7 @@ actions:
 moment_arm_cm:                  # sanity range for a listed action at the reference posture
   default: [0.3, 3.5]
   elbow_flexion_r: [0.5, 8.0]   # Murray et al. 1995 J Biomech 28:513: brachioradialis up to ~7-8 cm
+min_moment_arm_cm: 0.1            # over a joint's whole range, a listed muscle still pulls its anatomical way
 
 # 01 -- range the joints need for daily tasks vs the model's limits (deg)
 functional_rom_deg:
@@ -21,6 +22,7 @@ functional_rom_deg:
   deviation_r: [-40, 17]        # ... 40 ulnar, 17 radial
   elbow_flexion_r: [30, 130]    # Morrey et al. 1981 J Bone Joint Surg 63A:872
   pro_sup_r: [-50, 50]          # ... 50 pronation, 50 supination
+  mcp2_flexion_r: [-20, 85]     # AAOS normal: 0-90 flexion, hyperextension up to 45 passively
 
 # 02 -- maximal isometric wrist moments (Nm): Delp, Grierson & Buchanan 1996 J Biomech 29:1371, 10 men
 strength_nm:
@@ -85,12 +87,12 @@ hdemg:
   drive: {EDC2: 0.3, EIP: 0.3, FDS2: 0.3, FDP2: 0.3}
   tolerance: 0.15               # |simulated - recorded| correlation at each distance
 
-# 07 -- a relaxed finger, displaced and let go, springs back to rest (Xu et al. 2011 ICRA, roboti.us/lab/papers/
-# XuICRA11.pdf: human index MCP released by hand, "slightly under-damped", settled within the 200 ms analysed;
-# K 0.50 Nm/rad, B 0.0142 Nms/rad as cited there)
+# 07 -- a relaxed finger, extended and let go, springs back to rest (Xu et al. 2011 ICRA, roboti.us/lab/papers/
+# XuICRA11.pdf: human index MCP extended by hand and released, "slightly under-damped", settled within the 200 ms
+# analysed; K 0.50 Nm/rad, B 0.0142 Nms/rad as cited there). The flexed release has no measurement: same bound.
 release:
   joint: mcp2_flexion_r
-  displacements_deg: [35, -5]     # flexed, then extended (rest is 16 deg; near the extension limit, 0, it sticks)
+  displacements_deg: [-40, 35]    # extended (Xu's protocol; rest is 16 deg, the limit -30), then flexed
   seconds: 0.5
   max_return_s: 0.2               # back within 10 % of the displacement
   damping_ratio: [0.1, 1.0]       # under-damped

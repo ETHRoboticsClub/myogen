@@ -18,6 +18,17 @@ class MusculoskeletalParams:
     # (Xu et al. 2011 ICRA), so a relaxed finger let go springs back to rest in ~0.15 s, slightly under-damped.
     passive_damping: dict[str, float] = field(default_factory=lambda: {
         "mcp": 0.0142, "mcp_abd": 0.0142, "pm": 0.0142, "md": 0.0142})
+    # Joint ranges (deg) replacing the model's: normal ranges (AAOS: MCP hyperextension, PIP 100, DIP 10 of
+    # hyperextension; Ryu et al. 1991: 40 ulnar, 60-65 extension used in daily tasks), cut where a muscle's path
+    # stops pulling its anatomical way (wrist flexion beyond 45, radial deviation beyond 25: validation/01).
+    joint_range_deg: dict[str, tuple[float, float]] = field(default_factory=lambda: {
+        "flexion_r": (-65.0, 45.0), "deviation_r": (-40.0, 25.0), "mcp": (-30.0, 90.0), "pm": (0.0, 100.0),
+        "md": (-10.0, 90.0)})
+    # Maximal force of the muscles that cross the wrist, relative to the model's: its maximal isometric wrist moments
+    # (every helping muscle fully active) were 1.3-2.3x those measured (Delp et al. 1996); 0.53 is the geometric mean
+    # of the four ratios (validation/02). An effective scale: it does not say whether PCSA, specific tension or
+    # incomplete voluntary activation is off. Finger forces are not checked against a measurement yet.
+    wrist_muscle_force_scale: float = 0.53
     spring_offset_max: float = 0.6        # rad, max shift of a spring's reference to balance gravity at rest
     # Fraction of the static joint torque carried by the support: (elbow, wrist) on an armrest / arm held up.
     armrest_support: tuple[float, float] = (0.925, 0.6)
