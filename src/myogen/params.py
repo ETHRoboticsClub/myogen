@@ -124,8 +124,6 @@ class MotorUnitParams:
 class EMGParams:
     """From muscle activity to the signal at the electrodes (simulation/emg.py)."""
     motor_units: MotorUnitParams = field(default_factory=MotorUnitParams)
-    anatomy: str = "atlas"                # atlas (docs/anatomy.md) | lines
-    n_sources: int = 6                    # points along a muscle belly (units of muscles outside the atlas sit there)
     decay_mm: float = 12.0                # distance over which a unit's gain at a pole falls by 1/e (biphasic)
     conduction_velocity: float = 4.0      # m/s along the fibres (sets the delay between the two poles)
     fs: float = 2000.0                    # Hz, output sampling rate

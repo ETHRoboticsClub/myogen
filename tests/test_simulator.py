@@ -74,9 +74,10 @@ def test_anatomy():
     brachioradialis radial-palmar, FCU ulnar, ECRL radial-dorsal, EDC dorsal, and superficial ones near the skin."""
     model = ForearmModel()
     emg = EMGModel(model, mg.Subject(), mg.Electrodes([mg.Electrode(0, 7)]), EMGParams())
-    src = emg.sources(model.d)
+    pts, owner = emg.muscle_points(model.d)
     for name, (lo, hi) in {"BRD_r": (-70, 0), "FCU_r": (140, 200), "ECRL_r": (0, 45), "EDC3_r": (30, 90)}.items():
-        s = src[model.muscle_names.index(name), :3]               # the proximal sources, under a band
+        s = pts[owner == model.muscle_names.index(name)]
+        s = s[s[:, 2] < np.median(s[:, 2])]                       # the proximal half, under a band
         angle = np.degrees(np.angle(np.mean(np.exp(1j * np.arctan2(s[:, 1], s[:, 0])))))
         assert (angle - lo) % 360 <= hi - lo, (name, angle)                  # within [lo, hi], wrapping
         depth = emg.skin_radius(s[:, 2]) - np.hypot(s[:, 0], s[:, 1]) - emg.fat
@@ -219,10 +220,10 @@ def test_elbow_does_not_move_forearm_muscles():
     d = mujoco.MjData(model.m)
     d.qpos[:] = model.default_qpos
     mujoco.mj_kinematics(model.m, d)
-    straight = emg.atlas_positions(emg.atlas_sources, emg.bellies(d))
+    straight = emg.atlas_positions(emg.units.atlas, emg.bellies(d))
     d.qpos[model.elbow_qpos] = np.radians(100)
     mujoco.mj_kinematics(model.m, d)
-    flexed = emg.atlas_positions(emg.atlas_sources, emg.bellies(d))
+    flexed = emg.atlas_positions(emg.units.atlas, emg.bellies(d))
     assert np.allclose(straight, flexed)
     assert np.all(np.hypot(flexed[:, 0], flexed[:, 1]) <= emg.under_fat(flexed[:, 2]) + 1e-9)
 

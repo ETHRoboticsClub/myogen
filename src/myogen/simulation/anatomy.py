@@ -23,7 +23,7 @@ class Anatomy:
     cross-section comes from the atlas and the motion from the musculoskeletal model. The bellies are taken with the
     elbow at the reference angle (EMGModel.bellies): flexing the elbow swings the humeral origins of BRD, ECRL and
     the common flexor and extensor heads around the forearm frame, which would drag their points out of the limb.
-    Muscles outside the atlas (upper arm) have no points and keep the lines of action. The atlas also has each
+    Muscles outside the atlas (upper arm) have no points (and no EMG). The atlas also has each
     muscle's surface (and the radius and ulna's) as triangle meshes whose vertices are in the same coordinates, so
     they move and vary like the points."""
 
@@ -81,13 +81,6 @@ class Anatomy:
     def z(self, level: np.ndarray) -> np.ndarray:
         """Distance from the elbow (m) of a level along the radius (0 head, 1 styloid) at the reference pose."""
         return self.z_head + level * (self.z_tip - self.z_head)
-
-    def centroids(self, muscle: int, k: int) -> np.ndarray:
-        """(k, 3) points standing for the muscle in k slabs of equal volume, proximal to distal: the noise engine's
-        sources."""
-        p = self.points[muscle]
-        groups = np.array_split(p[np.argsort(p[:, 0], kind="stable")], k)
-        return np.array([[g[:, 0].mean(), np.angle(np.mean(np.exp(1j * g[:, 1]))), g[:, 2].mean()] for g in groups])
 
     def prepare(self, muscles: np.ndarray, points: np.ndarray) -> AtlasPoints:
         """Fixed part of placing atlas points (N, 3: level, angle, depth) of these muscles (N,)."""

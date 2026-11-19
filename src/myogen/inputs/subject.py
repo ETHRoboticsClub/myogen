@@ -21,7 +21,6 @@ class Subject:
     taper: float = 0.375              # wrist radius = elbow radius * (1 - taper); [0.3, 0.45]
     fat_mm: float = 5.0               # subcutaneous fat; [2, 8]
     radial_fill: float = 0.885        # how far out the muscle bellies reach (fraction of radius minus fat)
-    muscle_spread_mm: float = 4.0     # muscle width (transverse spread of the EMG sources); [2, 6]
     amputee: bool = False             # transradial: intrinsic hand muscles absent, extrinsic ones atrophied
     # Muscles relative to the model and the atlas (per-muscle lists: (nu,), None = unchanged)
     strength: float = 1.0             # maximal force of every muscle; [0.7, 1.3]
@@ -102,7 +101,6 @@ class Subject:
             taper=float(rng.uniform(0.3, 0.45)),
             fat_mm=float(rng.uniform(2, 8)),
             radial_fill=float(rng.uniform(0.8, 0.97)),
-            muscle_spread_mm=float(rng.uniform(2, 6)),
             amputee=amputee,
             residual_length=float(rng.uniform(0.35, 0.8)) if amputee else 1.0,
             elbow_angle_deg=float(rng.uniform(40, 103)),

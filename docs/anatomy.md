@@ -3,8 +3,7 @@
 Where each forearm muscle sits in the cross-section decides what every electrode records. The musculoskeletal model
 only has each muscle's line of action (the tendon path MyoSim inherits from MoBL-ARMS), and those lines are placed
 for their moment arms, not for their volume: at the band, brachioradialis came out dorsal, FCU palmar and nothing
-covered the ulnar side. `EMGParams.anatomy = "atlas"` (the default) puts the muscles where a 3D anatomical atlas
-has them; `"lines"` keeps the old geometry.
+covered the ulnar side. myogen puts the muscles where a 3D anatomical atlas has them.
 
 ![Atlas slices](anatomy/slices.png)
 
@@ -38,8 +37,8 @@ Meshes used (right side; FJ = BodyParts3D element file):
 | PT | FJ1474 + FJ1516 (humeral and ulnar heads) | | SUP, ANC | FJ1505, FJ1485 |
 | PQ | FJ1503 | | bones | FJ3349 radius, FJ3391 ulna |
 
-The upper-arm muscles of the model (TRI, BIC, BRA) are not in the atlas and keep their lines of action; they are
-above the elbow, outside every band.
+The upper-arm muscles of the model (TRI, BIC, BRA) are not in the atlas and produce no EMG: they are above the
+elbow, outside every band.
 
 ## Method (`build_anatomy.py`)
 

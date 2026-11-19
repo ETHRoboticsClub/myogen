@@ -11,8 +11,6 @@ from .anatomy import TRACK_POINTS, Anatomy, AtlasPoints
 from .motor_units import MotorUnits
 from .musculoskeletal import R_MODEL_REF
 
-ANATOMIES = ("atlas", "lines")
-
 if TYPE_CHECKING:
     from ..inputs.electrodes import Electrodes
     from ..inputs.subject import Subject
@@ -22,35 +20,24 @@ if TYPE_CHECKING:
 
 class EMGModel:
     """Clean sEMG at the electrodes from muscle activity (forearm frame: z along the forearm from the elbow,
-    metres). The forearm muscles sit where the BodyParts3D atlas has them (anatomy "atlas", simulation/anatomy.py)
-    or on the model's lines of action ("lines"). Each muscle is a motor-unit pool (MotorUnits) whose action
-    potentials each electrode pole sees; bipolar = pole 1 - pole 2 delayed by the conduction time between them; monopolar = the
-    electrode's single pole against a distant reference, or against the average of the electrodes."""
+    metres). The forearm muscles sit where the BodyParts3D atlas has them (simulation/anatomy.py); each is a
+    motor-unit pool (MotorUnits) whose action potentials every electrode pole sees; bipolar = pole 1 - pole 2 delayed
+    by the conduction time between them; monopolar = the electrode's single pole against a distant reference, or
+    against the average of the electrodes."""
 
     def __init__(self, model: ForearmModel, subject: Subject, electrodes: Electrodes,
                  params: EMGParams | None = None) -> None:
         self.model, self.sub, self.params = model, subject, params or EMGParams()
         p = self.params
-        self.n_sources, self.decay, self.fs = p.n_sources, p.decay_mm / 1000, p.fs
+        self.decay, self.fs = p.decay_mm / 1000, p.fs
         self.data = mujoco.MjData(model.m)              # scratch state for the per-tick geometry
         self.fat = subject.fat_mm / 1000
         self.limb_length = subject.residual_length * model.forearm_length   # shorter for amputees
         self.monopolar, self.reference = electrodes.monopolar, electrodes.reference
 
-        # Fixed per-subject (x, y) offset of every source: muscles sit slightly differently in each person.
-        self.source_offset = np.random.default_rng(subject.seed).normal(
-            0.0, subject.muscle_spread_mm / 1000, size=(model.nu, self.n_sources, 2))
         self.poles = self._pole_positions(electrodes)                       # (C, 2 or 1 poles, xyz)
-        if p.anatomy not in ANATOMIES:
-            raise ValueError(f"anatomy must be one of {' | '.join(ANATOMIES)}, got {p.anatomy!r}")
-        self.anatomy = Anatomy(model, subject) if p.anatomy == "atlas" else None
+        self.anatomy = Anatomy(model, subject)
         self._track = mujoco.MjData(model.m)            # scratch state for the bellies (bellies())
-        # The noise sources of an atlas muscle: its volume in n_sources slabs.
-        if self.anatomy is not None:
-            self.atlas_muscles = np.array(sorted(self.anatomy.points))
-            self.atlas_sources = self.anatomy.prepare(
-                np.repeat(self.atlas_muscles, self.n_sources),
-                np.vstack([self.anatomy.centroids(i, self.n_sources) for i in self.atlas_muscles]))
 
         # Delay (s) between the two poles: the along-fibre part of the pole spacing over the conduction velocity.
         along_fibre = np.array([e.ied_mm / 1000 * np.cos(np.radians(e.orientation_deg))
@@ -124,24 +111,17 @@ class EMGModel:
         return self.anatomy.positions(pts, belly, self.under_fat, self.xy_scale, sel)
 
     def muscle_points(self, d: mujoco.MjData) -> tuple[np.ndarray, np.ndarray]:
-        """(N, 3) points filling the muscles at this pose (an atlas muscle's volume, else its belly sources), and the
-        muscle of each (for drawing)."""
-        src = self.sources(d)
-        lines = np.ones(self.model.nu, bool) if self.anatomy is None else ~self.anatomy.has
-        pts, owner = [src[lines].reshape(-1, 3)], [np.repeat(np.flatnonzero(lines), self.n_sources)]
-        if self.anatomy is not None:
-            if not hasattr(self, "_volume"):
-                muscles = sorted(self.anatomy.points)
-                self._volume = self.anatomy.prepare(np.repeat(muscles, [len(self.anatomy.points[m]) for m in muscles]),
-                                                    np.vstack([self.anatomy.points[m] for m in muscles]))
-            pts.append(self._inside(self.atlas_positions(self._volume, self.bellies(d))))
-            owner.append(self._volume.muscle)
-        return np.vstack(pts), np.concatenate(owner)
+        """(N, 3) points filling the atlas muscles at this pose, and the muscle of each."""
+        if not hasattr(self, "_volume"):
+            muscles = sorted(self.anatomy.points)
+            self._volume = self.anatomy.prepare(np.repeat(muscles, [len(self.anatomy.points[m]) for m in muscles]),
+                                                np.vstack([self.anatomy.points[m] for m in muscles]))
+        return self._inside(self.atlas_positions(self._volume, self.bellies(d))), self._volume.muscle
 
     def muscle_surfaces(self, d: mujoco.MjData) -> list[tuple[int, np.ndarray, np.ndarray]]:
         """(muscle, vertices (V, 3) in the forearm frame at this pose, faces) of every atlas muscle surface; the
         vertices move like the volume points (muscle_points)."""
-        if self.anatomy is None or not self.anatomy.meshes:
+        if not self.anatomy.meshes:
             return []
         if not hasattr(self, "_surface"):
             ms = sorted(self.anatomy.meshes)
@@ -152,7 +132,7 @@ class EMGModel:
         return [(m, v, self.anatomy.meshes[m][1]) for m, v in zip(sorted(self.anatomy.meshes), verts)]
 
     def _inside(self, p: np.ndarray) -> np.ndarray:
-        """Points pulled back under the fat where posture pushed them out (as the sources and the units are)."""
+        """Points pulled back under the fat where posture pushed them out (as the units are)."""
         r, under_fat = np.hypot(p[:, 0], p[:, 1]), self.under_fat(p[:, 2])
         p[:, :2] *= (np.minimum(r, under_fat) / np.maximum(r, 1e-9))[:, None]
         return p
@@ -160,30 +140,11 @@ class EMGModel:
     def bone_surfaces(self) -> list[tuple[str, np.ndarray, np.ndarray]]:
         """(name, vertices in the forearm frame, faces) of the atlas radius and ulna, in this subject's section at
         the atlas's reference pose (they do not follow posture)."""
-        if self.anatomy is None:
-            return []
         out = []
         for name, (v, f) in self.anatomy.bone_meshes.items():
             z = self.anatomy.z(v[:, 0])
             r = self.under_fat(z) * np.minimum(v[:, 2], 1.0)
             out.append((name, np.column_stack([r * np.cos(v[:, 1]), r * np.sin(v[:, 1]), z]), f))
-        return out
-
-    def sources(self, d: mujoco.MjData) -> np.ndarray:
-        """(nu, K, 3) source positions in the forearm frame, in this subject's cross-section."""
-        model_pts = self.model.belly_points(self.n_sources, d)               # in the generic model's forearm
-        z = model_pts[..., 2]
-        # Rescale the model's cross-section to this subject's, then add the per-subject offsets.
-        xy = model_pts[..., :2] * self.xy_scale(z)[..., None] + self.source_offset
-        out = np.concatenate([xy, z[..., None]], axis=-1)
-        if self.anatomy is not None:
-            out[self.atlas_muscles] = self.atlas_positions(self.atlas_sources, self.bellies(d)).reshape(
-                len(self.atlas_muscles), self.n_sources, 3)
-            out[self.atlas_muscles, :, :2] += self.source_offset[self.atlas_muscles]
-        # Pull back any source the offset pushed into the fat layer.
-        under_fat = self.under_fat(out[..., 2])
-        r = np.linalg.norm(out[..., :2], axis=-1)
-        out[..., :2] *= (np.minimum(r, under_fat) / np.maximum(r, 1e-9))[..., None]
         return out
 
     def _bipolar(self, pole_emg: np.ndarray) -> np.ndarray:

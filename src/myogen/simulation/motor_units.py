@@ -32,7 +32,7 @@ class MotorUnits:
         p, model = self.p, emg.model
         rng = np.random.default_rng(np.random.SeedSequence([emg.sub.seed, 7]))
         force = model.m.actuator_gainprm[:, 2]
-        muscles = np.flatnonzero(model.extrinsic)            # the hand's own muscles are not under a forearm band
+        muscles = np.flatnonzero(model.extrinsic & emg.anatomy.has)   # the forearm muscles (not the hand's, the arm's)
         size = emg.sub.per_muscle("muscle_size", model.nu, 1.0)[muscles]       # force already holds the strength
         counts = np.clip(np.round(p.units_per_newton * force[muscles] * size), p.min_units, p.max_units).astype(int)
         self.muscle = np.repeat(muscles, counts)              # (U,) muscle of each unit
@@ -40,24 +40,13 @@ class MotorUnits:
         # Recruitment (Fuglevand 1993): thresholds spread exponentially, most units recruited at low drive.
         self.threshold = p.recruitment_max * np.exp(np.log(p.recruitment_range) * (rank - 1))
         self.amplitude = np.exp(np.log(p.amplitude_range) * rank)
-        # Territory: a point along the belly (one of the EMG sources) and an offset across the muscle; in an atlas
-        # muscle, a point of its volume instead.
-        self.segment = rng.integers(0, emg.n_sources, len(self.muscle))
-        radius = emg.sub.muscle_spread_mm / 1000 * np.sqrt(rng.uniform(0, 1, len(self.muscle)))
-        angle = rng.uniform(0, 2 * np.pi, len(self.muscle))
-        self.offset = np.stack([radius * np.cos(angle), radius * np.sin(angle)], axis=1)
-        self.in_atlas = np.zeros(len(self.muscle), bool)
-        self.atlas_index = np.full(len(self.muscle), -1)          # unit -> its row in self.atlas
-        if emg.anatomy is not None:
-            self.in_atlas = emg.anatomy.has[self.muscle]
-            units = np.flatnonzero(self.in_atlas)
-            points = np.empty((len(units), 3))
-            for m in np.unique(self.muscle[units]):
-                sel = self.muscle[units] == m
-                pts = emg.anatomy.points[m]
-                points[sel] = pts[rng.integers(0, len(pts), sel.sum())]
-            self.atlas = emg.anatomy.prepare(self.muscle[units], points)
-            self.atlas_index[units] = np.arange(len(units))
+        # Territory: a random point of the muscle's atlas volume.
+        points = np.empty((len(self.muscle), 3))
+        for m in np.unique(self.muscle):
+            sel = self.muscle == m
+            pts = emg.anatomy.points[m]
+            points[sel] = pts[rng.integers(0, len(pts), sel.sum())]
+        self.atlas = emg.anatomy.prepare(self.muscle, points)
         if p.waveform not in WAVEFORMS:
             raise ValueError(f"waveform must be one of {' | '.join(WAVEFORMS)}, got {p.waveform!r}")
         self.table = None
@@ -82,7 +71,7 @@ class MotorUnits:
 
     def _scale(self, muscle_amp: np.ndarray) -> np.ndarray:
         """(U,) amplitude of each unit so that a fully driven superficial muscle under a pole gives an RMS of
-        muscle_amp, as the noise sources do."""
+        muscle_amp."""
         p, emg = self.p, self.emg
         d0 = emg.fat + emg.params.superficial_depth_m
         if self.table is not None:     # the waveform there, the pole REFERENCE_DISTANCE_M from the end-plate
@@ -182,14 +171,7 @@ class MotorUnits:
         emg = self.emg
         emg.data.qpos[:] = qpos
         mujoco.mj_kinematics(emg.model.m, emg.data)
-        atlas = self.in_atlas[units]
-        pos = np.empty((len(units), 3))
-        if not atlas.all():
-            src = emg.sources(emg.data)                                          # (nu, K, 3)
-            pos[~atlas] = src[self.muscle[units[~atlas]], self.segment[units[~atlas]]]
-            pos[~atlas, :2] += self.offset[units[~atlas]]
-        if atlas.any():
-            pos[atlas] = emg.atlas_positions(self.atlas, emg.bellies(emg.data), self.atlas_index[units[atlas]])
+        pos = emg.atlas_positions(self.atlas, emg.bellies(emg.data), units)
         under_fat = emg.under_fat(pos[:, 2])
         r = np.linalg.norm(pos[:, :2], axis=1)
         pos[:, :2] *= (np.minimum(r, under_fat) / np.maximum(r, 1e-9))[:, None]
