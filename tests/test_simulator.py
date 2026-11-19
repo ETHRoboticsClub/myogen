@@ -1,4 +1,5 @@
 """The pipeline: shapes, determinism, files, electrode physics."""
+import mujoco
 import numpy as np
 import pytest
 
@@ -181,3 +182,61 @@ def test_subject_anatomy():
     assert np.mean(points(varied, brd)[:, 2]) < np.mean(points(base, brd)[:, 2])          # deeper: nearer the axis
     assert turn(points(varied, edc), points(base, edc)) == pytest.approx(10.0, abs=1.0)
     assert np.std(points(varied, edc)[:, 2]) > 1.2 * np.std(points(base, edc)[:, 2])       # wider
+
+
+def _winding(v: np.ndarray, f: np.ndarray, p: np.ndarray) -> np.ndarray:
+    """Generalised winding number of points p around the triangle mesh (v, f): ~1 inside, ~0 outside."""
+    a, b, c = (v[f[:, k]][None] - p[:, None] for k in range(3))
+    la, lb, lc = (np.linalg.norm(x, axis=-1) for x in (a, b, c))
+    num = np.einsum("ntk,ntk->nt", a, np.cross(b, c))
+    den = la * lb * lc + (a * b).sum(-1) * lc + (a * c).sum(-1) * lb + (b * c).sum(-1) * la
+    return 2 * np.arctan2(num, den).sum(1) / (4 * np.pi)
+
+
+def test_muscle_surfaces():
+    """Every atlas muscle has a closed surface that wraps its volume points, at a flexed pose of a varied subject."""
+    model = ForearmModel()
+    emg = EMGModel(model, mg.Subject.random(3), mg.Electrodes([mg.Electrode(0, 7)]), EMGParams())
+    d = mujoco.MjData(model.m)
+    d.qpos[:] = model.default_qpos
+    d.qpos[model.elbow_qpos] = 1.3
+    d.qpos[model.m.jnt_qposadr[model.m.joint("flexion_r").id]] = 0.5
+    mujoco.mj_kinematics(model.m, d)
+    pts, owner = emg.muscle_points(d)
+    surfaces = emg.muscle_surfaces(d)
+    assert {m for m, _, _ in surfaces} == set(emg.anatomy.points)
+    inside = {model.muscle_names[m]: np.mean(np.abs(_winding(v, f, pts[owner == m])) > 0.5) for m, v, f in surfaces}
+    assert np.median(list(inside.values())) > 0.85, inside
+    assert min(inside.values()) > 0.6, inside
+    assert {n for n, _, _ in emg.bone_surfaces()} == {"radius", "ulna"}
+
+
+def test_elbow_does_not_move_forearm_muscles():
+    """The elbow angle swings the humeral origins of BRD and ECRL around the forearm frame; the atlas muscles must
+    stay where they are in the forearm (and inside it)."""
+    model = ForearmModel()
+    emg = EMGModel(model, mg.Subject(), mg.Electrodes([mg.Electrode(0, 7)]), EMGParams())
+    d = mujoco.MjData(model.m)
+    d.qpos[:] = model.default_qpos
+    mujoco.mj_kinematics(model.m, d)
+    straight = emg.atlas_positions(emg.atlas_sources, emg.bellies(d))
+    d.qpos[model.elbow_qpos] = np.radians(100)
+    mujoco.mj_kinematics(model.m, d)
+    flexed = emg.atlas_positions(emg.atlas_sources, emg.bellies(d))
+    assert np.allclose(straight, flexed)
+    assert np.all(np.hypot(flexed[:, 0], flexed[:, 1]) <= emg.under_fat(flexed[:, 2]) + 1e-9)
+
+
+def test_viewer(recording):
+    """The replay viewer builds the scene and draws frames (muscle surfaces, paths, EMG) without a browser."""
+    viser = pytest.importorskip("viser")
+    from myogen.tools.viewer import ReplayView
+    server = viser.ViserServer(port=0, verbose=False)
+    try:
+        view = ReplayView(server, ForearmModel(), recording)
+        assert len(view.muscles) == len(view.emg.anatomy.meshes) and view.paths
+        for t in (0.0, 0.7, 1.9):
+            view._last_muscles = view._last_plot = 0.0
+            view.update(t)
+    finally:
+        server.stop()

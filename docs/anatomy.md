@@ -19,9 +19,10 @@ of action give the same muscles (the old geometry). Numbers per muscle and level
   <https://dbarchive.biosciencedbc.jp/en/bodyparts3d/download.html>. One body, in the anatomical position.
 - Licence: CC BY-SA 2.1 Japan, "BodyParts3D, (c) The Database Center for Life Science licensed under CC
   Attribution-Share Alike 2.1 Japan". The derived files (`src/myogen/models/forearm_anatomy.npz`, `docs/anatomy/`)
-  carry that licence (`src/myogen/models/LICENSE-BodyParts3D`); the meshes themselves are not in the repository.
+  carry that licence (`src/myogen/models/LICENSE-BodyParts3D`), the simplified muscle surfaces in the npz included;
+  the original meshes are not in the repository.
 - Rebuild: download and unzip the archive, then
-  `python src/myogen/models/build_anatomy.py <unzipped folder>` (about 2 min).
+  `pip install -e ".[model-build]"` and `python src/myogen/models/build_anatomy.py <unzipped folder>` (about 3 min).
 
 Meshes used (right side; FJ = BodyParts3D element file):
 
@@ -56,6 +57,14 @@ above the elbow, outside every band.
    ulnar side (index radial); FDS in a superficial layer (middle, ring) and a deep one (index, little), each split
    radial / ulnar.
 6. **Samples**: 400 voxels per model muscle, uniformly over its volume, stored as (level, angle, depth fraction).
+7. **Surfaces** (for drawing): every model muscle's voxels (finger compartments included), and the radius's and
+   ulna's, are rasterised on a 1 mm grid in the normalised (round) section, closed and filled slice by slice,
+   smoothed (Gaussian, 1.2 mm), interpolated between levels and iso-surfaced (marching cubes, at 0.4: 90 % of a
+   muscle's samples fall inside its surface, against 81 % at 0.5, with little overlap). Pieces below 5 % of
+   the volume (thin distal tendons that break off) are dropped; the mesh is simplified to 2500 triangles and Taubin
+   smoothed. Vertices are stored as (level, angle, depth fraction) like the samples, so `Anatomy` varies them per
+   subject and `EMGModel.muscle_surfaces(d)` places them at any pose exactly as it places the EMG points. They
+   are for display only: the EMG never reads them.
 
 ## How myogen uses it (`simulation/anatomy.py`)
 
@@ -65,6 +74,9 @@ above the elbow, outside every band.
 - **Posture**: each atlas point follows its muscle's belly in the musculoskeletal model, at the belly point nearest
   in height: the point moves by the belly's displacement from the reference pose (scaled to the subject's
   section). The cross-section comes from the atlas, the motion (pronation, muscle shortening) from the model.
+  The bellies are taken with the elbow at the atlas's reference angle: the forearm frame rides on the ulna, so the
+  elbow angle only swings the humeral origins of BRD, ECRL and the common flexor and extensor heads around it (at the
+  default 72° it pushed BRD 6 cm out of the limb, and the engines then pressed it flat under the fat).
 - **Motor units** sit at a random atlas point of their muscle (a point of its volume, so large muscles spread their
   units); the noise engine's sources are the centres of each muscle's volume in `n_sources` slabs.
 - Speed: placing the points is vectorised (with `belly_points`), so 10 s of 16-channel motor-unit EMG takes 1.6 s

@@ -29,7 +29,7 @@ loses deep and lateral units faster than a single pole.
    potential starts (end-plate) and stops (tendons) come out of the windowing. A unit's fibres end at scattered
    tendon junctions (±6 mm).
 3. **A unit** (`MUAPTable`): the fibre waveform at every grid point (depth below the muscle surface 0.5-33 mm,
-   angle 0-180° in 2.5° steps, pole distance from the end-plate ±60 mm in 2 mm steps), blurred over the unit's
+   angle 0-180° in 2.5° steps, pole distance from the end-plate ±200 mm in 2 mm steps: a monopolar pole sees the far ends of long muscles), blurred over the unit's
    territory (2 mm) and end-plate scatter (5 mm).
 4. **Compression**: the waveforms are about 12 ms (24 samples at 2 kHz) and smooth, so 10 principal components of
    their shapes reproduce them (shape error < 0.001 for 99 % of the table). Each spike adds its 10 weights

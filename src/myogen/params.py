@@ -88,11 +88,11 @@ class VolumeConductorParams:
     # MUAP table grid
     depths_mm: tuple[float, ...] = (0.5, 1, 1.5, 2, 3, 4, 5, 6, 8, 10, 12, 14, 17, 20, 24, 28, 33)
     angle_step_deg: float = 2.5
-    max_distance_mm: float = 60.0
+    max_distance_mm: float = 200.0       # a monopolar pole sees muscles far along the forearm
     distance_step_mm: float = 2.0
     half_window_ms: float = 25.0
     grid_mm: float = 0.5
-    window_mm: float = 256.0
+    window_mm: float = 512.0
     angular_orders: int = 64
     n_basis: int = 10
 

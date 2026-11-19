@@ -20,8 +20,12 @@ class Anatomy:
     """Where each forearm muscle is, from BodyParts3D (models/build_anatomy.py, docs/anatomy.md): points sampled
     uniformly over the muscle's volume as (level along the radius, angle, depth fraction), at the model's reference
     pose. Posture moves every point with its muscle's belly in the model (the belly point at the same height), so the
-    cross-section comes from the atlas and the motion from the musculoskeletal model. Muscles outside the atlas (upper
-    arm) have no points and keep the lines of action."""
+    cross-section comes from the atlas and the motion from the musculoskeletal model. The bellies are taken with the
+    elbow at the reference angle (EMGModel.bellies): flexing the elbow swings the humeral origins of BRD, ECRL and
+    the common flexor and extensor heads around the forearm frame, which would drag their points out of the limb.
+    Muscles outside the atlas (upper arm) have no points and keep the lines of action. The atlas also has each
+    muscle's surface (and the radius and ulna's) as triangle meshes whose vertices are in the same coordinates, so
+    they move and vary like the points."""
 
     def __init__(self, model: ForearmModel, subject: Subject | None = None, path: str | Path = ANATOMY_NPZ) -> None:
         self.model = model
@@ -29,31 +33,49 @@ class Anatomy:
         names = [str(n) for n in data["names"]]
         self.has = np.array([n in names for n in model.muscle_names])
         self.points = {i: data[f"points_{n}"].astype(float) for i, n in enumerate(model.muscle_names) if n in names}
+        mesh_names = [str(n) for n in data["mesh_names"]] if "mesh_names" in data else []
+        mesh = lambda n: (data[f"mesh_{n}_v"].astype(float), data[f"mesh_{n}_f"])           # noqa: E731
+        # Surfaces (vertices: level, angle, depth fraction; faces) of the atlas muscles, and of the bones.
+        self.meshes = {i: mesh(n) for i, n in enumerate(model.muscle_names) if n in mesh_names}
+        self.bone_meshes = {n: mesh(n) for n in mesh_names if n not in model.muscle_names}
         if subject is not None:
+            self.meshes = {i: (self._vary(i, v, subject, self.points[i]), f) for i, (v, f) in self.meshes.items()}
+            self.bone_meshes = {n: (self._turn(v, subject.section_rotation_deg), f)
+                                for n, (v, f) in self.bone_meshes.items()}
             self.points = {i: self._vary(i, p, subject) for i, p in self.points.items()}
+        self.q_ref = data["q_ref"].astype(float)
         d = mujoco.MjData(model.m)
-        d.qpos[:] = data["q_ref"]
+        d.qpos[:] = self.q_ref
         mujoco.mj_kinematics(model.m, d)
         self.z_head, self.z_tip = model.radius_extent(d)
         self.belly_ref = model.belly_points(TRACK_POINTS, d)
 
-    def _vary(self, muscle: int, points: np.ndarray, subject: Subject) -> np.ndarray:
+    def _vary(self, muscle: int, points: np.ndarray, subject: Subject, ref: np.ndarray | None = None) -> np.ndarray:
         """This subject's version of a muscle's points: the section turned, the muscle shifted around the forearm,
-        nearer or farther from the skin, and wider or narrower around its centre at each level."""
+        nearer or farther from the skin, and wider or narrower around its centre at each level. ref: the muscle's
+        volume samples, whose centre per level the points spread around (default: the points themselves; a
+        surface's vertices pass the volume's)."""
         n = self.model.nu
         size = subject.per_muscle("muscle_size", n, 1.0)[muscle]
         depth = subject.per_muscle("muscle_depth", n, 1.0)[muscle]
         turn = np.radians(subject.section_rotation_deg + subject.per_muscle("muscle_shift_deg", n, 0.0)[muscle])
+        ref = points if ref is None else ref
+        levels = np.unique(ref[:, 0])
+        centre = np.unwrap([np.angle(np.mean(np.exp(1j * ref[ref[:, 0] == lv, 1]))) for lv in levels])
+        frac_mean = [ref[ref[:, 0] == lv, 2].mean() for lv in levels]
+        c, fm = np.interp(points[:, 0], levels, centre), np.interp(points[:, 0], levels, frac_mean)
+        spread = np.sqrt(size)                                      # area ~ size
         out = points.copy()
-        for level in np.unique(points[:, 0]):
-            sel = points[:, 0] == level
-            angle, frac = points[sel, 1], points[sel, 2]
-            centre = np.angle(np.mean(np.exp(1j * angle)))
-            spread = np.sqrt(size)                                  # area ~ size
-            out[sel, 1] = centre + spread * np.angle(np.exp(1j * (angle - centre)))
-            out[sel, 2] = frac.mean() + spread * (frac - frac.mean())
+        out[:, 1] = c + spread * np.angle(np.exp(1j * (points[:, 1] - c)))
+        out[:, 2] = fm + spread * (points[:, 2] - fm)
         out[:, 1] = np.angle(np.exp(1j * (out[:, 1] + turn)))
         out[:, 2] = np.clip(1 - (1 - out[:, 2]) * depth, MIN_DEPTH_FRACTION, 1.0)   # depth below the muscle surface
+        return out
+
+    @staticmethod
+    def _turn(points: np.ndarray, deg: float) -> np.ndarray:
+        out = points.copy()
+        out[:, 1] = np.angle(np.exp(1j * (out[:, 1] + np.radians(deg))))
         return out
 
     def z(self, level: np.ndarray) -> np.ndarray:

@@ -47,6 +47,7 @@ class EMGModel:
         if p.anatomy not in ANATOMIES:
             raise ValueError(f"anatomy must be one of {' | '.join(ANATOMIES)}, got {p.anatomy!r}")
         self.anatomy = Anatomy(model, subject) if p.anatomy == "atlas" else None
+        self._track = mujoco.MjData(model.m)            # scratch state for the bellies (bellies())
         # The noise sources of an atlas muscle: its volume in n_sources slabs.
         if self.anatomy is not None:
             self.atlas_muscles = np.array(sorted(self.anatomy.points))
@@ -120,8 +121,15 @@ class EMGModel:
         return self.under_fat(z) * self.sub.radial_fill / R_MODEL_REF
 
     def bellies(self, d: mujoco.MjData) -> np.ndarray:
-        """(nu, TRACK_POINTS, 3) the model's bellies now (they carry the posture to the atlas points)."""
-        return self.model.belly_points(TRACK_POINTS, d)
+        """(nu, TRACK_POINTS, 3) the model's bellies at this pose with the elbow at the atlas's reference angle (they
+        carry the posture to the atlas points). The forearm frame rides on the ulna, so the elbow angle only swings
+        the humeral origins of the muscles that cross it around that frame (at 72 deg BRD would leave the limb by
+        6 cm); pronation, the wrist and the fingers move the bellies as they are."""
+        t = self._track
+        t.qpos[:] = d.qpos
+        t.qpos[self.model.elbow_qpos] = self.anatomy.q_ref[self.model.elbow_qpos]
+        mujoco.mj_kinematics(self.model.m, t)
+        return self.model.belly_points(TRACK_POINTS, t)
 
     def atlas_positions(self, pts: AtlasPoints, belly: np.ndarray, sel: np.ndarray | slice = slice(None)) -> np.ndarray:
         """(N, 3) prepared atlas points (Anatomy.prepare) in this subject's forearm at the current pose."""
@@ -138,9 +146,40 @@ class EMGModel:
                 muscles = sorted(self.anatomy.points)
                 self._volume = self.anatomy.prepare(np.repeat(muscles, [len(self.anatomy.points[m]) for m in muscles]),
                                                     np.vstack([self.anatomy.points[m] for m in muscles]))
-            pts.append(self.atlas_positions(self._volume, self.bellies(d)))
+            pts.append(self._inside(self.atlas_positions(self._volume, self.bellies(d))))
             owner.append(self._volume.muscle)
         return np.vstack(pts), np.concatenate(owner)
+
+    def muscle_surfaces(self, d: mujoco.MjData) -> list[tuple[int, np.ndarray, np.ndarray]]:
+        """(muscle, vertices (V, 3) in the forearm frame at this pose, faces) of every atlas muscle surface; the
+        vertices move like the volume points (muscle_points)."""
+        if self.anatomy is None or not self.anatomy.meshes:
+            return []
+        if not hasattr(self, "_surface"):
+            ms = sorted(self.anatomy.meshes)
+            self._surface_split = np.cumsum([len(self.anatomy.meshes[m][0]) for m in ms])[:-1]
+            self._surface = self.anatomy.prepare(np.repeat(ms, [len(self.anatomy.meshes[m][0]) for m in ms]),
+                                                 np.vstack([self.anatomy.meshes[m][0] for m in ms]))
+        verts = np.split(self._inside(self.atlas_positions(self._surface, self.bellies(d))), self._surface_split)
+        return [(m, v, self.anatomy.meshes[m][1]) for m, v in zip(sorted(self.anatomy.meshes), verts)]
+
+    def _inside(self, p: np.ndarray) -> np.ndarray:
+        """Points pulled back under the fat where posture pushed them out (as the sources and the units are)."""
+        r, under_fat = np.hypot(p[:, 0], p[:, 1]), self.under_fat(p[:, 2])
+        p[:, :2] *= (np.minimum(r, under_fat) / np.maximum(r, 1e-9))[:, None]
+        return p
+
+    def bone_surfaces(self) -> list[tuple[str, np.ndarray, np.ndarray]]:
+        """(name, vertices in the forearm frame, faces) of the atlas radius and ulna, in this subject's section at
+        the atlas's reference pose (they do not follow posture)."""
+        if self.anatomy is None:
+            return []
+        out = []
+        for name, (v, f) in self.anatomy.bone_meshes.items():
+            z = self.anatomy.z(v[:, 0])
+            r = self.under_fat(z) * np.minimum(v[:, 2], 1.0)
+            out.append((name, np.column_stack([r * np.cos(v[:, 1]), r * np.sin(v[:, 1]), z]), f))
+        return out
 
     def sources(self, d: mujoco.MjData) -> np.ndarray:
         """(nu, K, 3) source positions in the forearm frame, in this subject's cross-section."""

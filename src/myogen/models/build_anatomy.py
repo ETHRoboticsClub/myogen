@@ -1,14 +1,18 @@
 # Rebuild the forearm muscle anatomy from BodyParts3D (docs/anatomy.md):
 #   python src/myogen/models/build_anatomy.py <unzipped isa_BP3D_4.0_obj_99 folder>
 # -> src/myogen/models/forearm_anatomy.npz, docs/anatomy/slices.png, docs/anatomy/levels.csv
+# Needs: pip install -e ".[model-build]"
 import argparse
 import csv
 from pathlib import Path
 
+import fast_simplification
 import matplotlib.pyplot as plt
 import mujoco
 import numpy as np
 import trimesh
+from scipy import ndimage
+from skimage import measure
 
 from myogen.simulation.musculoskeletal import ForearmModel
 
@@ -37,6 +41,12 @@ FIGURE_LEVELS = (0.15, 0.3, 0.5, 0.7)
 FLEXORS = ("FCR", "PL", "FCU")               # wrist flexors and extensors: centres reported as a check
 EXTENSORS = ("ECRL", "ECRB", "ECU")
 ANCHOR_LEVELS = (0.1, 0.5)                    # where the bands sit
+MESH_CELL_MM = 1.0                            # in-plane cell of the surface grid
+MESH_SMOOTH_MM = 1.2                          # Gaussian smoothing of the occupancy before the iso-surface
+MESH_ISO = 0.4                                # occupancy level of the surface (lower: fuller)
+MESH_FACES = 2500                             # triangles per surface after simplification
+MESH_TAUBIN = 10                              # Taubin smoothing iterations (keeps the volume)
+MESH_MIN_PART = 0.05                          # pieces of a surface below this share of its volume are dropped
 
 
 def winding_inside(mesh: trimesh.Trimesh, points: np.ndarray, chunk: int = 1500) -> np.ndarray:
@@ -231,9 +241,9 @@ def split(points: np.ndarray, name: str) -> dict[str, np.ndarray]:
     return {f: np.vstack(v) for f, v in out.items()}
 
 
-def model_points(atlas: Atlas, place: Placement) -> dict[str, np.ndarray]:
-    """(N, 3) level, angle (model frame: 0 radial, +90 dorsal), depth fraction per model muscle."""
-    rng = np.random.default_rng(0)
+def model_volumes(atlas: Atlas, place: Placement) -> dict[str, np.ndarray]:
+    """All voxels (level, angle in the model frame: 0 radial, +90 dorsal, depth fraction) per model muscle, finger
+    compartments split."""
     out = {}
     for name, pts in atlas.polar.items():
         if name in BONES:
@@ -242,8 +252,66 @@ def model_points(atlas: Atlas, place: Placement) -> dict[str, np.ndarray]:
         pts[:, 1] = place.model_angle(pts[:, 1])
         parts = split(pts, name) if name in ("FDS", "FDP", "EDC") else {"": pts}
         for suffix, p in parts.items():
-            keep = rng.choice(len(p), min(POINTS_PER_MUSCLE, len(p)), replace=False)
-            out[f"{name}{suffix}_r"] = p[keep]
+            out[f"{name}{suffix}_r"] = p
+    return out
+
+
+def model_points(volumes: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    """POINTS_PER_MUSCLE voxels per model muscle, uniformly over its volume."""
+    rng = np.random.default_rng(0)
+    return {k: p[rng.choice(len(p), min(POINTS_PER_MUSCLE, len(p)), replace=False)] for k, p in volumes.items()}
+
+
+def surface(points: np.ndarray, length_mm: float, radius_mm: float) -> tuple[np.ndarray, np.ndarray]:
+    """Closed surface around voxels (level, angle, depth fraction): vertices in the same coordinates, faces.
+    The voxels are rasterised on a grid in the normalised (round) section, closed and smoothed slice by slice,
+    interpolated between levels, and iso-surfaced; the mesh is then simplified and smoothed in millimetres.
+    length_mm: the atlas radius length (mm per unit level); radius_mm: mm per unit depth fraction (typical
+    envelope), so the grid is ~isotropic."""
+    step = LEVELS[1] - LEVELS[0]
+    cell = MESH_CELL_MM / radius_mm                              # depth fraction per cell
+    half, pad = int(np.ceil(points[:, 2].max() / cell)) + 2, 2
+    li = np.rint((points[:, 0] - LEVELS[0]) / step).astype(int) + pad
+    xi = np.rint(points[:, 2] * np.cos(points[:, 1]) / cell).astype(int) + half + pad
+    yi = np.rint(points[:, 2] * np.sin(points[:, 1]) / cell).astype(int) + half + pad
+    occ = np.zeros((len(LEVELS) + 2 * pad, 2 * (half + pad) + 1, 2 * (half + pad) + 1), bool)
+    occ[li, xi, yi] = True
+    cross = ndimage.generate_binary_structure(2, 1)
+    for k in np.unique(li):              # the polar warp leaves gaps between voxels: close them in each slice
+        occ[k] = ndimage.binary_fill_holes(ndimage.binary_closing(occ[k], cross, iterations=2))
+    field = ndimage.gaussian_filter(occ.astype(float), (0.4, MESH_SMOOTH_MM / MESH_CELL_MM, MESH_SMOOTH_MM /
+                                                        MESH_CELL_MM))
+    up = max(1, int(round(step * length_mm / (2 * MESH_CELL_MM))))   # slices ~2 cells apart
+    field = ndimage.zoom(field, (up, 1, 1), order=1)
+    iso = min(MESH_ISO, 0.5 * field.max())                       # thin muscles: keep them
+    v, f, _, _ = measure.marching_cubes(field, iso)
+    level = LEVELS[0] + (v[:, 0] / up - pad) * step
+    x, y = (v[:, 1] - half - pad) * cell, (v[:, 2] - half - pad) * cell
+    mm = np.column_stack([level * length_mm, x * radius_mm, y * radius_mm])
+    # Thin tendons break off the iso-surface as specks: keep the pieces with a real share of the volume.
+    parts = trimesh.Trimesh(mm, f, process=True).split(only_watertight=False)
+    size = np.array([abs(p.volume) for p in parts])
+    whole = trimesh.util.concatenate([p for p, s in zip(parts, size) if s >= MESH_MIN_PART * size.sum()])
+    mm, f = whole.vertices, whole.faces
+    if len(f) > MESH_FACES:
+        mm, f = fast_simplification.simplify(mm, f, target_reduction=1 - MESH_FACES / len(f))
+    mesh = trimesh.Trimesh(mm, f, process=True)
+    trimesh.smoothing.filter_taubin(mesh, iterations=MESH_TAUBIN)
+    mm, f = mesh.vertices, mesh.faces
+    x, y = mm[:, 1] / radius_mm, mm[:, 2] / radius_mm
+    return np.column_stack([mm[:, 0] / length_mm, np.arctan2(y, x), np.hypot(x, y)]), f
+
+
+def surfaces(atlas: Atlas, place: Placement, volumes: dict[str, np.ndarray]) -> dict[str, tuple[np.ndarray,
+                                                                                                    np.ndarray]]:
+    """Surface of every model muscle and of the radius and ulna, in (level, angle, depth fraction)."""
+    radius_mm = float(np.median(np.concatenate(list(atlas.envelope.values()))))
+    out = {}
+    for name in [*volumes, *BONES]:
+        pts = volumes[name] if name in volumes else atlas.polar[name].copy()
+        if name in BONES:
+            pts[:, 1] = place.model_angle(pts[:, 1])
+        out[name] = surface(pts, atlas.length, radius_mm)
     return out
 
 
@@ -330,12 +398,19 @@ def main() -> None:
     model = ForearmModel()
     atlas = Atlas(args.meshes)
     place = Placement(atlas, model)
-    points = model_points(atlas, place)
+    volumes = model_volumes(atlas, place)
+    points = model_points(volumes)
+    meshes = surfaces(atlas, place, volumes)
+    for name, (v, f) in meshes.items():
+        print(f"surface {name:7s} {len(v):5d} vertices {len(f):5d} faces")
     print(f"wrist flexors at {place.flexors_deg:.0f} deg, extensors at {place.extensors_deg:.0f} deg")
     for level, bone, a, mdl in place.bone_check():
         print(f"{level:.1f} {bone:6s} atlas {a:6.0f}  model {mdl:6.0f} deg")
     np.savez_compressed(OUT_NPZ, names=np.array(list(points)), q_ref=place.q_ref, source=SOURCE,
-                        **{f"points_{k}": v.astype(np.float32) for k, v in points.items()})
+                        **{f"points_{k}": v.astype(np.float32) for k, v in points.items()},
+                        mesh_names=np.array(list(meshes)),
+                        **{f"mesh_{k}_v": v.astype(np.float32) for k, (v, _) in meshes.items()},
+                        **{f"mesh_{k}_f": f.astype(np.int32) for k, (_, f) in meshes.items()})
     write_report(atlas, place, points, model)
 
 

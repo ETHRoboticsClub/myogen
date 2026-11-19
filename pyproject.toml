@@ -24,10 +24,10 @@ classifiers = [
 Repository = "https://github.com/ETHRoboticsClub/myogen"
 
 [project.optional-dependencies]
-viewer = ["mjviser"]                  # myogen replay
+viewer = ["viser>=1.0"]               # myogen replay
 examples = ["matplotlib", "ipykernel", "ipywidgets"]   # the notebooks (ipywidgets: live progress bars)
 dev = ["pytest", "mypy", "ruff", "nbconvert", "matplotlib", "ipykernel", "ipywidgets"]
-model-build = ["myo-sim>=0.2.3"]      # only for src/myogen/models/build_model.py
+model-build = ["myo-sim>=0.2.3", "trimesh", "matplotlib", "scikit-image", "fast-simplification"]   # models/build_*.py
 
 [project.scripts]
 myogen = "myogen.tools.cli:main"
