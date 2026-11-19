@@ -8,10 +8,16 @@ from typing import Any
 class MusculoskeletalParams:
     """Loads on the skeleton besides the muscles (simulation/musculoskeletal.py)."""
     # Passive joint stiffness (Nm/rad) around the relaxed posture: capsules, ligaments, resting muscle tone.
-    # Finger joints are looked up by prefix (mcp, mcp_abd, pm, md).
+    # Finger joints are looked up by prefix (mcp, mcp_abd, pm, md). MCP: 0.2, the top of the mid-range values
+    # measured on relaxed index fingers (0.016-0.21, Kuo & Deshpande 2012; Xu et al. 2011 cite 0.5 over the whole
+    # range); the other finger joints in the same proportion as before. validation/07_passive_release.py.
     passive_stiffness: dict[str, float] = field(default_factory=lambda: {
         "pro_sup_r": 0.1, "deviation_r": 0.25, "flexion_r": 0.2, "cmc_flexion_r": 0.03, "cmc_abduction_r": 0.03,
-        "mp_flexion_r": 0.02, "ip_flexion_r": 0.01, "mcp": 0.04, "mcp_abd": 0.02, "pm": 0.02, "md": 0.01})
+        "mp_flexion_r": 0.02, "ip_flexion_r": 0.01, "mcp": 0.2, "mcp_abd": 0.1, "pm": 0.1, "md": 0.05})
+    # Passive joint damping (Nms/rad) of the finger joints (the others keep the model's): the index MCP's, 0.0142
+    # (Xu et al. 2011 ICRA), so a relaxed finger let go springs back to rest in ~0.15 s, slightly under-damped.
+    passive_damping: dict[str, float] = field(default_factory=lambda: {
+        "mcp": 0.0142, "mcp_abd": 0.0142, "pm": 0.0142, "md": 0.0142})
     spring_offset_max: float = 0.6        # rad, max shift of a spring's reference to balance gravity at rest
     # Fraction of the static joint torque carried by the support: (elbow, wrist) on an armrest / arm held up.
     armrest_support: tuple[float, float] = (0.925, 0.6)

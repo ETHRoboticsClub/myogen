@@ -54,6 +54,10 @@ class ForearmModel:
         self.path_padded = np.array([np.concatenate([p, np.repeat(p[-1:], n_sites - len(p))]) for p in self.path_sites])
         elbow, wrist = self._axis_points(self.d)
         self.forearm_length = float(np.linalg.norm(wrist - elbow))       # m
+        for name in self.joint_names:                                      # passive damping where params give it
+            damping = _per_joint(name, self.params.passive_damping)
+            if damping is not None:
+                m.dof_damping[m.jnt_dofadr[m.joint(name).id]] = damping
 
     @property
     def nu(self) -> int:
@@ -165,7 +169,7 @@ class ForearmModel:
         m, d = self.m, self.d
         k_all = np.zeros(m.njnt)
         for name in self.joint_names:
-            k_all[m.joint(name).id] = _joint_stiffness(name, self.params.passive_stiffness) * scale
+            k_all[m.joint(name).id] = (_per_joint(name, self.params.passive_stiffness) or 0.0) * scale
         m.jnt_stiffness[:] = k_all
         m.qpos_spring[:] = q_rest
         self.set_pose(q_rest)
@@ -196,10 +200,10 @@ class ForearmModel:
         return tau
 
 
-def _joint_stiffness(name: str, stiffness: dict[str, float]) -> float:
-    """A joint's passive stiffness (Nm/rad); finger joints by prefix (MusculoskeletalParams.passive_stiffness)."""
+def _per_joint(name: str, values: dict[str, float]) -> float | None:
+    """A joint's value in a MusculoskeletalParams table: by name, finger joints by prefix (mcp, mcp_abd, pm, md)."""
     if name.startswith("mcp"):
-        return stiffness["mcp_abd" if "abduction" in name else "mcp"]
+        return values.get("mcp_abd" if "abduction" in name else "mcp")
     if name[:2] in ("pm", "md"):
-        return stiffness[name[:2]]
-    return stiffness.get(name, 0.0)
+        return values.get(name[:2])
+    return values.get(name)

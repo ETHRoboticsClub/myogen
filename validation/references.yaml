@@ -84,3 +84,13 @@ hdemg:
   decay_mm: 8.0                 # femg's synthetic.yaml
   drive: {EDC2: 0.3, EIP: 0.3, FDS2: 0.3, FDP2: 0.3}
   tolerance: 0.15               # |simulated - recorded| correlation at each distance
+
+# 07 -- a relaxed finger, displaced and let go, springs back to rest (Xu et al. 2011 ICRA, roboti.us/lab/papers/
+# XuICRA11.pdf: human index MCP released by hand, "slightly under-damped", settled within the 200 ms analysed;
+# K 0.50 Nm/rad, B 0.0142 Nms/rad as cited there)
+release:
+  joint: mcp2_flexion_r
+  displacements_deg: [35, -5]     # flexed, then extended (rest is 16 deg; near the extension limit, 0, it sticks)
+  seconds: 0.5
+  max_return_s: 0.2               # back within 10 % of the displacement
+  damping_ratio: [0.1, 1.0]       # under-damped
