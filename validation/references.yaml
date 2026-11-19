@@ -97,3 +97,11 @@ release:
   seconds: 0.5
   max_return_s: 0.2               # back within 10 % of the displacement
   damping_ratio: [0.1, 1.0]       # under-damped
+
+# 08 -- maximal single-finger pressing force (fingertip, palmar): Shinohara et al. 2003 J Appl Physiol 94:259,
+# young men (mean, sd; N). Similar in young adults of PMC2821089 (index 46, middle 35, ring 27, little 22 N).
+finger_force:
+  fingers: {IF: [47.5, 12.2], MF: [35.5, 11.5], RF: [26.1, 9.7], LF: [25.4, 6.3]}   # tip site -> mean, sd
+  tip_sites: {IF: 2, MF: 3, RF: 4, LF: 5}      # finger number in the model's joint names
+  posture_deg: {mcp: 30, pm: 30, md: 15}       # assumed: fingers slightly flexed on the sensor (not reported)
+  friction: 0.5                                # skin on the sensor: tangential force up to this x the normal one

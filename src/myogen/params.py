@@ -35,11 +35,14 @@ class MusculoskeletalParams:
     joint_range_deg: dict[str, tuple[float, float]] = field(default_factory=lambda: {
         "flexion_r": (-65.0, 45.0), "deviation_r": (-40.0, 25.0), "mcp": (-30.0, 90.0), "pm": (0.0, 100.0),
         "md": (-10.0, 90.0)})
-    # Maximal force of the muscles that cross the wrist, relative to the model's: its maximal isometric wrist moments
-    # (every helping muscle fully active) were 1.3-2.3x those measured (Delp et al. 1996); 0.53 is the geometric mean
-    # of the four ratios (validation/02). An effective scale: it does not say whether PCSA, specific tension or
-    # incomplete voluntary activation is off. Finger forces are not checked against a measurement yet.
-    wrist_muscle_force_scale: float = 0.53
+    # Maximal force of the muscles that cross the wrist, relative to the model's, in two groups: those that also move
+    # fingers 2-5 (FDS, FDP, EDC, EIP, EDM) and the others (wrist and thumb muscles). With every muscle as in the model
+    # the maximal wrist moments were 1.3-2.3x those measured (Delp et al. 1996, validation/02); the finger muscles are
+    # also held to the maximal single-finger pressing forces (Shinohara et al. 2003, validation/08). Effective scales,
+    # calibrated on those two references: they do not say whether PCSA, specific tension or incomplete voluntary
+    # activation is off.
+    wrist_muscle_force_scale: float = 0.5
+    finger_muscle_force_scale: float = 0.8
     spring_offset_max: float = 0.6        # rad, max shift of a spring's reference to balance gravity at rest
     # Fraction of the static joint torque carried by the support: (elbow, wrist) on an armrest / arm held up.
     armrest_support: tuple[float, float] = (0.925, 0.6)

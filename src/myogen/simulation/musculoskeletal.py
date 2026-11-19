@@ -59,9 +59,13 @@ class ForearmModel:
         self.path_padded = np.array([np.concatenate([p, np.repeat(p[-1:], n_sites - len(p))]) for p in self.path_sites])
         elbow, wrist = self._axis_points(self.d)
         self.forearm_length = float(np.linalg.norm(wrist - elbow))       # m
-        wrist_dofs = [m.jnt_dofadr[m.joint(n).id] for n in ("flexion_r", "deviation_r")]
-        crosses_wrist = np.abs(self.moment_arms(self.default_qpos)[:, wrist_dofs]).max(1) > 1e-4
-        self.scale_strength(np.where(crosses_wrist, self.params.wrist_muscle_force_scale, 1.0))
+        arms = np.abs(self.moment_arms(self.default_qpos)) > 1e-4
+        crosses = lambda names: arms[:, [m.jnt_dofadr[m.joint(n).id] for n in names]].any(1)     # noqa: E731
+        wrist = crosses(("flexion_r", "deviation_r"))
+        fingers = crosses([n for n in HAND_JOINTS if n.startswith(("mcp", "pm", "md"))])
+        p = self.params
+        self.scale_strength(np.where(wrist, np.where(fingers, p.finger_muscle_force_scale, p.wrist_muscle_force_scale),
+                                     1.0))
         self.passive_fingers = PassiveFingers(self, self.params)
         for name in self.joint_names:                                      # passive damping where params give it
             damping = _per_joint(name, self.params.passive_damping)
