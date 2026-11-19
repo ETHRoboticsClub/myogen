@@ -9,7 +9,7 @@ from myogen.simulation.emg import EMGModel
 r = REFS["motor_units"]
 f = Forearm()
 over = mg.Electrodes([mg.Electrode(60, 7, ied_mm=10)])                   # bipolar, over EDC (test_simulator.py)
-emg = EMGModel(f.model, f.subject, over, EMGParams(engine="motor_units"))
+emg = EMGModel(f.model, f.subject, over, EMGParams())
 units, mu = emg.units, f.muscle(r["muscle"])
 own = np.flatnonzero(units.muscle == mu)
 ticks = int(r["seconds"] * 100)

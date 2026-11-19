@@ -123,21 +123,18 @@ class MotorUnitParams:
 @dataclass(frozen=True)
 class EMGParams:
     """From muscle activity to the signal at the electrodes (simulation/emg.py)."""
-    engine: str = "noise"                 # noise: band-limited noise sources | motor_units: motor-unit spike trains
     motor_units: MotorUnitParams = field(default_factory=MotorUnitParams)
     anatomy: str = "atlas"                # atlas (docs/anatomy.md) | lines
-    n_sources: int = 6                    # point sources per muscle belly
-    decay_mm: float = 12.0                # distance over which a source's gain at a pole falls by 1/e
+    n_sources: int = 6                    # points along a muscle belly (units of muscles outside the atlas sit there)
+    decay_mm: float = 12.0                # distance over which a unit's gain at a pole falls by 1/e (biphasic)
     conduction_velocity: float = 4.0      # m/s along the fibres (sets the delay between the two poles)
     fs: float = 2000.0                    # Hz, output sampling rate
-    filter_order: int = 2                 # band-pass of the source noise (band: Subject.spectrum_hz)
     superficial_depth_m: float = 0.004    # muscle depth below the fat used to normalise amplitudes
     elbow_margin_m: float = 0.02          # sources up to this far proximal of the elbow still count
-    noise_to_mv: float = 3.0              # unit-variance source noise -> mV (before Subject.gain_mv)
-    # Calibration against the point-electrode model this replaces (same spatial selectivity at decay 12 mm):
-    # the bipolar derivation is 1.65x stronger, and it lowers the spectrum, compensated by Subject.spectrum_hz.
-    bipolar_scale: float = 0.6
-    monopolar_scale: float = 1.0          # monopolar: the point-electrode model itself
+    # mV per unit of the normalised signal, times Subject.gain_mv (calibrated against the point-electrode model the
+    # motor units replaced, at decay 12 mm: the bipolar derivation is 1.65x stronger).
+    bipolar_scale: float = 1.8
+    monopolar_scale: float = 3.0
 
 
 @dataclass(frozen=True)

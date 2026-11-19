@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from typing import Any
 
 import numpy as np
@@ -38,8 +38,6 @@ class Subject:
     gravity: tuple[float, float, float] = (0.0, 0.0, -1.0)
     # Muscles and EMG
     gain_mv: float = 1.5              # EMG amplitude: mV RMS of a superficial muscle at full drive (lognormal)
-    amp_exponent: float = 0.8         # EMG amplitude ~ drive ** exponent; [0.6, 1]
-    spectrum_hz: tuple[float, float] = (60.0, 215.0)  # band of the EMG source noise
     passive_stiffness: float = 1.0    # scale of the passive joint stiffness (lognormal)
     muscle_amp: list[float] | None = None        # (nu,) per-muscle EMG amplitude factors (None = 1)
     recruitment_cost: list[float] | None = None  # (nu,) relative cost of recruiting each muscle (None = 1)
@@ -57,7 +55,8 @@ class Subject:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Subject:
-        return cls(**{k: tuple(v) if k in ("gravity", "spectrum_hz") else v for k, v in data.items()})
+        known = {f.name for f in fields(cls)}          # fields of older versions are dropped
+        return cls(**{k: tuple(v) if k == "gravity" else v for k, v in data.items() if k in known})
 
     def per_muscle(self, name: str, n: int, default: float) -> np.ndarray:
         """(n,) a per-muscle field, its default where None."""
@@ -98,7 +97,6 @@ class Subject:
         amp = np.exp(rng.normal(0, 0.35, n_muscles))
         if amputee:
             amp *= np.exp(rng.normal(-0.3, 0.4, n_muscles))      # disuse atrophy
-        lo = float(rng.uniform(40, 80))
         return cls(
             forearm_radius_mm=float(rng.uniform(36, 47)) * (0.92 if amputee else 1.0),
             taper=float(rng.uniform(0.3, 0.45)),
@@ -110,8 +108,6 @@ class Subject:
             elbow_angle_deg=float(rng.uniform(40, 103)),
             armrest=bool(rng.random() < 0.5),
             gain_mv=float(np.exp(rng.normal(np.log(1.5), 0.4))),
-            amp_exponent=float(rng.uniform(0.6, 1.0)),
-            spectrum_hz=(lo, lo + float(rng.uniform(85, 225))),
             passive_stiffness=float(np.exp(rng.normal(0, 0.3))),
             muscle_amp=amp.tolist(),
             recruitment_cost=np.exp(rng.normal(0, 0.25, n_muscles)).tolist(),

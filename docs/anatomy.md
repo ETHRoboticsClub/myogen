@@ -78,7 +78,7 @@ above the elbow, outside every band.
   elbow angle only swings the humeral origins of BRD, ECRL and the common flexor and extensor heads around it (at the
   default 72° it pushed BRD 6 cm out of the limb, and the engines then pressed it flat under the fat).
 - **Motor units** sit at a random atlas point of their muscle (a point of its volume, so large muscles spread their
-  units); the noise engine's sources are the centres of each muscle's volume in `n_sources` slabs.
+  units).
 - Speed: placing the points is vectorised (with `belly_points`), so 10 s of 16-channel motor-unit EMG takes 1.6 s
   (3.0 s before, with the lines).
 

@@ -46,9 +46,9 @@ def test_electrode_off_the_forearm():
         mg.Simulator(mg.Electrodes([mg.Electrode(0, 20.0)]), subject=amputee)
 
 
-def _rms(electrodes, muscle="EDC3_r", engine="noise", level=0.5):
+def _rms(electrodes, muscle="EDC3_r", level=0.5):
     model = ForearmModel()
-    emg = EMGModel(model, mg.Subject(), electrodes, EMGParams(engine=engine))
+    emg = EMGModel(model, mg.Subject(), electrodes, EMGParams())
     T, nu = 200, model.nu
     drive = np.zeros((T, nu))
     drive[:, model.muscle_names.index(muscle)] = level
@@ -87,11 +87,11 @@ def test_motor_units():
     """Recruitment and rate coding: more drive, more units firing, faster; a bipolar pair cancels far units, so it
     sees less of the opposite side of the forearm than a monopolar electrode does."""
     ring = lambda **kw: mg.Electrodes([mg.Electrode(a, 7, ied_mm=10) for a in (90, 0, -90, 180)], **kw)
-    low, high = (_rms(ring(), engine="motor_units", level=x)[0] for x in (0.05, 0.5))
+    low, high = (_rms(ring(), level=x)[0] for x in (0.05, 0.5))
     assert 0 < low < 0.5 * high
-    bipolar, monopolar = _rms(ring(), engine="motor_units"), _rms(ring(derivation="monopolar"), engine="motor_units")
+    bipolar, monopolar = _rms(ring()), _rms(ring(derivation="monopolar"))
     assert bipolar[2] / bipolar[0] < monopolar[2] / monopolar[0]
-    units = mg.Simulator(ring(), params=mg.SimParams().replace(emg={"engine": "motor_units"})).emg.units
+    units = mg.Simulator(ring()).emg.units
     times, fired = units.spikes(np.full((100, 48), 0.3), 100.0, np.random.default_rng(0))
     rates = np.bincount(fired, minlength=units.n_units) / 1.0
     assert (rates[units.threshold > 0.36] == 0).all() and rates[units.threshold < 0.1].mean() > 10   # 5% common drive

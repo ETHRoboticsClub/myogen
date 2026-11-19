@@ -38,7 +38,7 @@ def simulated(side: str, waveform: str, f: Forearm) -> np.ndarray:
     step_deg = np.degrees(r["ied_mm"] / f.subject.forearm_radius_mm)     # arc of one step (radius at the elbow)
     grid = mg.Electrodes([mg.Electrode(at["angle_deg"] + (j - 3.5) * step_deg, at["position_cm"] + (i - 3.5) * 1)
                           for i in range(8) for j in range(8)], derivation="monopolar")
-    params = EMGParams(engine="motor_units", decay_mm=r["decay_mm"], motor_units=MotorUnitParams(waveform=waveform))
+    params = EMGParams(decay_mm=r["decay_mm"], motor_units=MotorUnitParams(waveform=waveform))
     x = EMGModel(f.model, f.subject, grid, params).generate(f.activity(r["drive"], 400), np.random.default_rng(0))
     band = signal.butter(4, r["band_hz"], btype="bandpass", fs=params.fs, output="sos")
     return signal.sosfiltfilt(band, x, axis=0).reshape(-1, 8, 8)

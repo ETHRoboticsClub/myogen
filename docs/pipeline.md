@@ -76,5 +76,5 @@ the muscles' positions).
 9. **Derivation and device**: bipolar pairs (10 mm), or monopolar poles against the ring average; then the
    dataset's device (`acquisition.record`: amplifier band-pass, noise, mains, movement artifacts).
 
-The EMG settings above are those of the checks (`synthetic.yaml` in the dataset repo: motor-unit engine, atlas
+The EMG settings above are those of the checks (`synthetic.yaml` in the dataset repo: atlas
 anatomy, decay 8 mm).
