@@ -1,0 +1,86 @@
+# What each validation script compares against: values from outside myogen (literature, physics, open data).
+# Muscle names without the model's "_r". Model sign convention: flexion, radial deviation, pronation > 0.
+
+posture: {elbow_deg: 90}        # Delp 1996 measured with the elbow at 90 deg; the hand at REST_POSTURE
+
+# 01 -- what each muscle does (textbook anatomy, e.g. Gonzalez et al. 1997 J Biomech 30:705 for the wrist)
+actions:
+  elbow_flexion_r: {positive: [BIClong, BICshort, BRA, BRD], negative: [TRIlong, TRIlat, TRImed, ANC]}
+  pro_sup_r: {positive: [PT, PQ], negative: [SUP, BIClong, BICshort]}
+  flexion_r: {positive: [FCR, FCU, PL, FDS2, FDS3, FDS4, FDS5, FDP2, FDP3, FDP4, FDP5, FPL],
+              negative: [ECRL, ECRB, ECU, EDC2, EDC3, EDC4, EDC5, EIP, EDM]}
+  deviation_r: {positive: [ECRL, APL, EPB], negative: [ECU, FCU]}
+  mcp2_flexion_r: {positive: [FDS2, FDP2], negative: [EDC2, EIP]}
+moment_arm_cm:                  # sanity range for a listed action at the reference posture
+  default: [0.3, 3.5]
+  elbow_flexion_r: [0.5, 8.0]   # Murray et al. 1995 J Biomech 28:513: brachioradialis up to ~7-8 cm
+
+# 01 -- range the joints need for daily tasks vs the model's limits (deg)
+functional_rom_deg:
+  flexion_r: [-60, 54]          # Ryu et al. 1991 J Hand Surg 16A:409: 60 extension, 54 flexion
+  deviation_r: [-40, 17]        # ... 40 ulnar, 17 radial
+  elbow_flexion_r: [30, 130]    # Morrey et al. 1981 J Bone Joint Surg 63A:872
+  pro_sup_r: [-50, 50]          # ... 50 pronation, 50 supination
+
+# 02 -- maximal isometric wrist moments (Nm): Delp, Grierson & Buchanan 1996 J Biomech 29:1371, 10 men
+strength_nm:
+  flexion: {joint: flexion_r, sign: 1, mean: 12.2, sd: 3.7}
+  extension: {joint: flexion_r, sign: -1, mean: 7.1, sd: 2.1}
+  radial: {joint: deviation_r, sign: 1, mean: 11.0, sd: 2.0}
+  ulnar: {joint: deviation_r, sign: -1, mean: 9.5, sd: 2.2}
+
+# 03 -- the muscle controller under isometric loads
+activation:
+  load_nm: 2.0                  # ~20 % of the maximal wrist moment
+  ticks: 80                     # 0.8 s held; the last `settle` ticks are averaged
+  settle: 30
+  max_reserve_nm: 0.1           # the muscles, not the reserve torques, carry the load
+  max_tracking_deg: 2.0
+  min_agonist_share: 0.7        # of the activation of the joint's muscles (Hoffman & Strick 1999: agonists lead)
+  max_rest_activation: 0.05     # a relaxed hand is nearly silent
+  rest_postures:                # held with no load (deg)
+    relaxed: {}
+    fingers_extended: {mcp2_flexion_r: 0, mcp3_flexion_r: 0, mcp4_flexion_r: 0, mcp5_flexion_r: 0,
+                       pm2_flexion_r: 0, pm3_flexion_r: 0, pm4_flexion_r: 0, pm5_flexion_r: 0}
+  preferred_direction_deg:      # angle of the load a muscle answers most (0 flexion, 90 radial): anatomy quadrants
+    FCR: [0, 90]
+    FCU: [-90, 0]
+    ECRL: [90, 180]
+    ECRB: [90, 180]
+    ECU: [-180, -90]
+
+# 04 -- motor units (Fuglevand et al. 1993 J Neurophysiol 70:2470 and the human data it summarises)
+motor_units:
+  muscle: EDC3
+  drives: [0.05, 0.1, 0.2, 0.4, 0.6, 0.8, 1.0]
+  seconds: 4.0
+  recruitment_rate_hz: [5, 10]        # De Luca & Hostage 2010 J Neurophysiol 104:1034
+  peak_rate_hz: [20, 50]
+  isi_cv: [0.1, 0.3]                  # Moritz et al. 2005 J Neurophysiol 93:2449
+  last_recruited_drive: [0.5, 0.85]   # small hand/forearm muscles ~50 %, larger ones ~80 % of MVC
+  rms_exponent: [0.8, 2.0]            # RMS ~ force^b: Lawrence & De Luca 1983 J Appl Physiol 54:1653
+  median_hz: [50, 150]                # bipolar surface EMG, raw
+  max_excess_kurtosis_high: 1.0       # Nazarpour et al. 2013 IEEE TBME 60:1149: Gaussian at high force
+
+# 05 -- MUAP to electrode: the biphasic engine against the layered volume conductor (physics, tests/ checks it
+# against the analytic half-space)
+muap:
+  depths_mm: [1, 2, 4, 6, 8, 12, 16, 20]
+  angles_deg: [0, 10, 20, 30, 45, 60]
+  ied_mm: 10
+  decays_mm: [12, 8]           # EMGParams default; femg's synthetic.yaml
+  ratio: [0.67, 1.5]            # biphasic decay length / volume conductor decay length
+
+# 06 -- spatial spread on a real HD-EMG grid: Hyser (Jiang et al. 2021 IEEE TNSRE 29:1035), PhysioNet hd-semg
+hdemg:
+  url: https://physionet.org/files/hd-semg/2.0.0/1dof_dataset/subject01_session1/
+  record: 1dof_preprocess_finger2_sample1    # index finger, force-varying; 4 monopolar 8x8 grids
+  channels: 256
+  grids: {ED: extensor, EP: extensor, FD: flexor, FP: flexor}   # extensor/flexor, distal/proximal
+  ied_mm: 10
+  band_hz: [10, 500]            # Hyser's preprocessing
+  distances: [1, 2, 3, 4]       # grid steps
+  placement: {extensor: {angle_deg: 60, position_cm: 7}, flexor: {angle_deg: -100, position_cm: 7}}
+  decay_mm: 8.0                 # femg's synthetic.yaml
+  drive: {EDC2: 0.3, EIP: 0.3, FDS2: 0.3, FDP2: 0.3}
+  tolerance: 0.15               # |simulated - recorded| correlation at each distance
