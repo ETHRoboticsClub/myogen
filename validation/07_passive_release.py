@@ -17,6 +17,7 @@ def release(displacement: float) -> np.ndarray:
     d.act[:], d.ctrl[:] = 0, 0
     out = []
     for _ in range(int(r["seconds"] / m.opt.timestep)):
+        d.qfrc_applied[:] = f.model.passive_fingers.joint_torques(d.qpos)     # as the muscle solver applies them
         mujoco.mj_step(m, d)
         out.append(d.qpos[k])
     return np.array(out)

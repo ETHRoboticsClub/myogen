@@ -134,7 +134,8 @@ class MuscleSolver:
         mujoco.mj_inverse(m, d)
         mujoco.mju_sparse2dense(self.R, d.actuator_moment, d.moment_rownnz, d.moment_rowadr, d.moment_colind)
         gain, bias = self._muscle_gain_bias()
-        load = load + self.support * (d.qfrc_bias - self.R.T @ bias - d.qfrc_spring)
+        static = d.qfrc_bias - self.R.T @ bias - d.qfrc_spring
+        load = load + self.model.passive_fingers.joint_torques(d.qpos) + self.support * static
 
         # Muscle activations that produce those torques.
         a_des, reserve, residual = self._solve_activation(d.qfrc_inverse - load, gain, bias)

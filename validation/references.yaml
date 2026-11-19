@@ -89,10 +89,11 @@ hdemg:
 
 # 07 -- a relaxed finger, extended and let go, springs back to rest (Xu et al. 2011 ICRA, roboti.us/lab/papers/
 # XuICRA11.pdf: human index MCP extended by hand and released, "slightly under-damped", settled within the 200 ms
-# analysed; K 0.50 Nm/rad, B 0.0142 Nms/rad as cited there). The flexed release has no measurement: same bound.
+# analysed; K 0.50 Nm/rad, B 0.0142 Nms/rad as cited there). Not the data the passive curves come from (Kuo &
+# Deshpande 2010 static moments, Kamper et al. 2002 damping): an independent check of the two together.
 release:
   joint: mcp2_flexion_r
-  displacements_deg: [-40, 35]    # extended (Xu's protocol; rest is 16 deg, the limit -30), then flexed
+  displacements_deg: [-40]        # extended, Xu's protocol (rest is 16 deg, the limit -30)
   seconds: 0.5
   max_return_s: 0.2               # back within 10 % of the displacement
   damping_ratio: [0.1, 1.0]       # under-damped

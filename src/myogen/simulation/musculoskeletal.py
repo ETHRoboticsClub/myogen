@@ -7,6 +7,7 @@ import numpy as np
 
 from ..inputs.subject import Subject
 from ..params import MusculoskeletalParams
+from .passive import PassiveFingers
 
 MODEL_XML = Path(__file__).resolve().parent.parent / "models" / "myoforearm_r.xml"
 
@@ -61,6 +62,7 @@ class ForearmModel:
         wrist_dofs = [m.jnt_dofadr[m.joint(n).id] for n in ("flexion_r", "deviation_r")]
         crosses_wrist = np.abs(self.moment_arms(self.default_qpos)[:, wrist_dofs]).max(1) > 1e-4
         self.scale_strength(np.where(crosses_wrist, self.params.wrist_muscle_force_scale, 1.0))
+        self.passive_fingers = PassiveFingers(self, self.params)
         for name in self.joint_names:                                      # passive damping where params give it
             damping = _per_joint(name, self.params.passive_damping)
             if damping is not None:
@@ -157,7 +159,8 @@ class ForearmModel:
 
     def set_environment(self, subject: Subject, q_start: np.ndarray, q_rest: np.ndarray) -> None:
         """The physics of a run besides the muscles: gravity (perpendicular to the forearm at q_start when it lies on
-        an armrest) and passive joint springs that hold the hand at the relaxed posture q_rest without muscle drive."""
+        an armrest) and passive joint springs (the fingers: measured curves, passive.py) that hold the hand at the
+        relaxed posture q_rest without muscle drive."""
         self.set_pose(q_start)
         gravity = np.asarray(subject.gravity, float)
         gravity = gravity / np.linalg.norm(gravity)
@@ -168,6 +171,7 @@ class ForearmModel:
             gravity -= (gravity @ axis) * axis
             gravity /= np.linalg.norm(gravity)
         self.m.opt.gravity[:] = GRAVITY * gravity
+        self.passive_fingers.tabulate()
         self._set_passive_springs(q_rest, subject.passive_stiffness)
 
     def _set_passive_springs(self, q_rest: np.ndarray, scale: float) -> None:
@@ -175,12 +179,15 @@ class ForearmModel:
         reference is offset to balance gravity and passive muscle forces at q_rest). Leaves d at q_rest."""
         m, d = self.m, self.d
         k_all = np.zeros(m.njnt)
+        fingers = set(self.passive_fingers.dofs)                # their passive torque is PassiveFingers'
         for name in self.joint_names:
-            k_all[m.joint(name).id] = (_per_joint(name, self.params.passive_stiffness) or 0.0) * scale
+            if m.jnt_dofadr[m.joint(name).id] not in fingers:
+                k_all[m.joint(name).id] = (_per_joint(name, self.params.passive_stiffness) or 0.0) * scale
         m.jnt_stiffness[:] = k_all
         m.qpos_spring[:] = q_rest
         self.set_pose(q_rest)
         static = d.qfrc_bias - d.qfrc_actuator           # torque the springs must supply (actuator = passive muscle)
+        self.passive_fingers.set_rest(static, q_rest, scale)  # the finger joints' curves supply it at their joints
         for jid in np.flatnonzero(k_all):
             a, v = m.jnt_qposadr[jid], m.jnt_dofadr[jid]
             m.qpos_spring[a] = q_rest[a] + np.clip(static[v] / k_all[jid], -self.params.spring_offset_max,

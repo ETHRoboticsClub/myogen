@@ -8,16 +8,27 @@ from typing import Any
 class MusculoskeletalParams:
     """Loads on the skeleton besides the muscles (simulation/musculoskeletal.py)."""
     # Passive joint stiffness (Nm/rad) around the relaxed posture: capsules, ligaments, resting muscle tone.
-    # Finger joints are looked up by prefix (mcp, mcp_abd, pm, md). MCP: 0.2, the top of the mid-range values
-    # measured on relaxed index fingers (0.016-0.21, Kuo & Deshpande 2012; Xu et al. 2011 cite 0.5 over the whole
-    # range); the other finger joints in the same proportion as before. validation/07_passive_release.py.
+    # Finger abduction is looked up by prefix (mcp_abd; simulation/passive.py); finger flexion follows the measured
+    # curves below instead.
     passive_stiffness: dict[str, float] = field(default_factory=lambda: {
         "pro_sup_r": 0.1, "deviation_r": 0.25, "flexion_r": 0.2, "cmc_flexion_r": 0.03, "cmc_abduction_r": 0.03,
-        "mp_flexion_r": 0.02, "ip_flexion_r": 0.01, "mcp": 0.2, "mcp_abd": 0.1, "pm": 0.1, "md": 0.05})
-    # Passive joint damping (Nms/rad) of the finger joints (the others keep the model's): the index MCP's, 0.0142
-    # (Xu et al. 2011 ICRA), so a relaxed finger let go springs back to rest in ~0.15 s, slightly under-damped.
+        "mp_flexion_r": 0.02, "ip_flexion_r": 0.01, "mcp_abd": 0.02})
+    # Passive moment-angle curves of the finger flexion joints, the measured total (Nm towards flexion; the joint adds
+    # what the model's muscles do not give, simulation/passive.py). Fingers 3-5 take the index's curves.
+    # MCP: Kuo & Deshpande 2010 (index, wrist 0, IP splinted, 4 subjects): A(e^-B(x-E) - 1) - C(e^D(x-F) - 1) in N cm,
+    # x in deg; (A, B, C, D, E, F).
+    passive_mcp: tuple[float, ...] = (0.68, 0.031, 0.31, 0.07, 73.14, 32.97)
+    # PIP, DIP: Kamper et al. 2002 Table 2, static torque, cubic in rad (c0..c3), measured over -10..60 deg; as
+    # transcribed in MyoSim pull request #139, not checked against the paper. Held constant beyond the valid range
+    # (no data there); the PIP cubic's stiffness turns negative past 45 deg, so it is valid up to there.
+    passive_pip_cubic: tuple[float, ...] = (0.015, -0.132, 0.016, 0.056)
+    passive_dip_cubic: tuple[float, ...] = (-0.019, -0.052, 0.102, -0.103)
+    passive_pip_valid_deg: tuple[float, float] = (-10.0, 45.0)
+    passive_dip_valid_deg: tuple[float, float] = (-10.0, 60.0)
+    # Passive joint damping (Nms/rad) of the finger joints (the others keep the model's): Kamper et al. 2002 (Table 2;
+    # MCP 0.0142 also in Xu et al. 2011).
     passive_damping: dict[str, float] = field(default_factory=lambda: {
-        "mcp": 0.0142, "mcp_abd": 0.0142, "pm": 0.0142, "md": 0.0142})
+        "mcp": 0.0142, "mcp_abd": 0.0142, "pm": 0.0105, "md": 0.0081})
     # Joint ranges (deg) replacing the model's: normal ranges (AAOS: MCP hyperextension, PIP 100, DIP 10 of
     # hyperextension; Ryu et al. 1991: 40 ulnar, 60-65 extension used in daily tasks), cut where a muscle's path
     # stops pulling its anatomical way (wrist flexion beyond 45, radial deviation beyond 25: validation/01).
