@@ -5,8 +5,10 @@ import pytest
 
 import myogen as mg
 from myogen.params import EMGParams
+from myogen.simulation.controller import MuscleActivity, MuscleController
+from myogen.simulation.effort import Effort, EffortPlan, effort
 from myogen.simulation.emg import EMGModel
-from myogen.simulation.muscle_activity import MuscleActivity, MuscleController
+from myogen.simulation.geometry import ForearmGeometry
 from myogen.simulation.musculoskeletal import ForearmModel
 
 
@@ -74,13 +76,14 @@ def test_anatomy():
     brachioradialis radial-palmar, FCU ulnar, ECRL radial-dorsal, EDC dorsal, and superficial ones near the skin."""
     model = ForearmModel()
     emg = EMGModel(model, mg.Subject(), mg.Electrodes([mg.Electrode(0, 7)]), EMGParams())
-    pts, owner = emg.muscle_points(model.d)
+    g = emg.geometry
+    pts, owner = g.muscle_points(model.d)
     for name, (lo, hi) in {"BRD_r": (-70, 0), "FCU_r": (140, 200), "ECRL_r": (0, 45), "EDC3_r": (30, 90)}.items():
         s = pts[owner == model.muscle_names.index(name)]
         s = s[s[:, 2] < np.median(s[:, 2])]                       # the proximal half, under a band
         angle = np.degrees(np.angle(np.mean(np.exp(1j * np.arctan2(s[:, 1], s[:, 0])))))
         assert (angle - lo) % 360 <= hi - lo, (name, angle)                  # within [lo, hi], wrapping
-        depth = emg.skin_radius(s[:, 2]) - np.hypot(s[:, 0], s[:, 1]) - emg.fat
+        depth = g.skin_radius(s[:, 2]) - np.hypot(s[:, 0], s[:, 1]) - g.fat
         assert np.median(depth) < 0.012, (name, depth)
 
 
@@ -92,9 +95,9 @@ def test_motor_units():
     assert 0 < low < 0.5 * high
     bipolar, monopolar = _rms(ring()), _rms(ring(derivation="monopolar"))
     assert bipolar[2] / bipolar[0] < monopolar[2] / monopolar[0]
-    units = mg.Simulator(ring()).emg.units
-    times, fired = units.spikes(np.full((100, 48), 0.3), 100.0, np.random.default_rng(0))
-    rates = np.bincount(fired, minlength=units.n_units) / 1.0
+    units = mg.Simulator(ring()).emg.pool
+    spikes = units.spikes(np.full((100, 48), 0.3), 100.0, np.random.default_rng(0))
+    rates = np.bincount(spikes.units, minlength=units.n_units) / 1.0
     assert (rates[units.threshold > 0.36] == 0).all() and rates[units.threshold < 0.1].mean() > 10   # 5% common drive
 
 
@@ -113,10 +116,10 @@ def test_effort_reaches_the_drive_not_the_mechanics():
     T = 150
     q = np.tile(model.default_qpos, (T, 1))
     model.prepare(mg.Subject(), q[0], q[0])
-    effort = np.zeros((T, model.nu))
-    effort[:, model.muscle_names.index("EDC3_r")] = 0.2
-    args = (q, np.zeros((T, model.m.nv)), np.zeros(model.m.nv), 1.0)
-    plain, effortful = MuscleController(model).track(*args), MuscleController(model).track(*args, effort=effort)
+    co = np.zeros((T, model.nu))
+    co[:, model.muscle_names.index("EDC3_r")] = 0.2
+    plain = MuscleController(model).track(q, np.zeros((T, model.m.nv)), np.zeros(model.m.nv), 1.0)
+    effortful = Effort(model, mg.Subject()).apply(plain, EffortPlan(co, np.zeros(T)))
     assert np.array_equal(plain.q, effortful.q)
     i = model.muscle_names.index("EDC3_r")
     assert effortful.drive[:, i].min() >= 0.2 > plain.drive[:, i].max()
@@ -126,7 +129,6 @@ def test_effort_is_directional():
     """Holding the wrist flexed co-activates mainly the wrist flexors, holding it extended mainly the extensors;
     the antagonists get Subject.antagonist_ratio of the agonists' effort."""
     from myogen.params import EffortParams
-    from myogen.simulation.muscle_activity import effort
     model = ForearmModel()
     T, wrist = 300, model.m.jnt_qposadr[model.m.joint("flexion_r").id]
     q_rest = model.default_qpos.copy()
@@ -143,13 +145,12 @@ def test_effort_is_directional():
 
 def test_tone():
     """Every muscle keeps rest_tone on top of its drive."""
-    from myogen.simulation.muscle_activity import with_tone
     T, nu = 100, 3
     drive = np.zeros((T, nu))
     drive[20:30, 0] = 0.5
     z = np.zeros((T, nu))
     activity = MuscleActivity(100.0, z, drive, z, z, np.ones((T, nu)), z, z, z, z, np.zeros(T))
-    toned = with_tone(activity, mg.Subject(rest_tone=0.04)).drive
+    toned = Effort(ForearmModel(), mg.Subject(rest_tone=0.04)).apply(activity, EffortPlan(z, np.zeros(T))).drive
     assert np.allclose(toned[:20], 0.04) and np.allclose(toned[25, 0], 0.54)
 
 
@@ -177,7 +178,7 @@ def test_subject_anatomy():
     varied = mg.Subject(section_rotation_deg=10.0, muscle_shift_deg=shift.tolist(), muscle_depth=depth.tolist(),
                         muscle_size=size.tolist())
     def points(subject, m):
-        return EMGModel(model, subject, mg.Electrodes([mg.Electrode(0, 7)]), EMGParams()).anatomy.points[m]
+        return ForearmGeometry(model, subject).anatomy.points[m]
     turn = lambda a, b: np.degrees(np.angle(np.mean(np.exp(1j * (a[:, 1] - b[:, 1])))))   # noqa: E731
     assert turn(points(varied, brd), points(base, brd)) == pytest.approx(30.0, abs=0.5)
     assert np.mean(points(varied, brd)[:, 2]) < np.mean(points(base, brd)[:, 2])          # deeper: nearer the axis
@@ -203,13 +204,14 @@ def test_muscle_surfaces():
     d.qpos[model.elbow_qpos] = 1.3
     d.qpos[model.m.jnt_qposadr[model.m.joint("flexion_r").id]] = 0.5
     mujoco.mj_kinematics(model.m, d)
-    pts, owner = emg.muscle_points(d)
-    surfaces = emg.muscle_surfaces(d)
-    assert {m for m, _, _ in surfaces} == set(emg.anatomy.points)
+    g = emg.geometry
+    pts, owner = g.muscle_points(d)
+    surfaces = g.muscle_surfaces(d)
+    assert {m for m, _, _ in surfaces} == set(g.anatomy.points)
     inside = {model.muscle_names[m]: np.mean(np.abs(_winding(v, f, pts[owner == m])) > 0.5) for m, v, f in surfaces}
     assert np.median(list(inside.values())) > 0.85, inside
     assert min(inside.values()) > 0.6, inside
-    assert {n for n, _, _ in emg.bone_surfaces()} == {"radius", "ulna"}
+    assert {n for n, _, _ in g.bone_surfaces()} == {"radius", "ulna"}
 
 
 def test_elbow_does_not_move_forearm_muscles():
@@ -220,12 +222,13 @@ def test_elbow_does_not_move_forearm_muscles():
     d = mujoco.MjData(model.m)
     d.qpos[:] = model.default_qpos
     mujoco.mj_kinematics(model.m, d)
-    straight = emg.atlas_positions(emg.units.atlas, emg.bellies(d))
+    g, units = emg.geometry, emg.placement.atlas
+    straight = g.atlas_positions(units, g.bellies(d))
     d.qpos[model.elbow_qpos] = np.radians(100)
     mujoco.mj_kinematics(model.m, d)
-    flexed = emg.atlas_positions(emg.units.atlas, emg.bellies(d))
+    flexed = g.atlas_positions(units, g.bellies(d))
     assert np.allclose(straight, flexed)
-    assert np.all(np.hypot(flexed[:, 0], flexed[:, 1]) <= emg.under_fat(flexed[:, 2]) + 1e-9)
+    assert np.all(np.hypot(flexed[:, 0], flexed[:, 1]) <= g.under_fat(flexed[:, 2]) + 1e-9)
 
 
 def test_viewer(recording):
@@ -235,7 +238,7 @@ def test_viewer(recording):
     server = viser.ViserServer(port=0, verbose=False)
     try:
         view = ReplayView(server, ForearmModel(), recording)
-        assert len(view.muscles) == len(view.emg.anatomy.meshes) and view.paths
+        assert len(view.muscles) == len(view.geometry.anatomy.meshes) and view.paths
         for t in (0.0, 0.7, 1.9):
             view._last_muscles = view._last_plot = 0.0
             view.update(t)

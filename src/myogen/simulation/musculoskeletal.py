@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import mujoco
 import numpy as np
 
+from ..inputs.subject import Subject
 from ..params import MusculoskeletalParams
-
-if TYPE_CHECKING:
-    from ..inputs.subject import Subject
 
 MODEL_XML = Path(__file__).resolve().parent.parent / "models" / "myoforearm_r.xml"
 

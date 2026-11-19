@@ -10,7 +10,7 @@ r = REFS["motor_units"]
 f = Forearm()
 over = mg.Electrodes([mg.Electrode(60, 7, ied_mm=10)])                   # bipolar, over EDC (test_simulator.py)
 emg = EMGModel(f.model, f.subject, over, EMGParams())
-units, mu = emg.units, f.muscle(r["muscle"])
+units, mu = emg.pool, f.muscle(r["muscle"])
 own = np.flatnonzero(units.muscle == mu)
 ticks = int(r["seconds"] * 100)
 
@@ -18,7 +18,8 @@ rates, cvs, rms, kurt, median = [], [], [], [], []
 for level in r["drives"]:
     drive = np.zeros((ticks, f.model.nu))
     drive[:, mu] = level
-    times, fired = units.spikes(drive, 100.0, np.random.default_rng(0))
+    spikes = units.spikes(drive, 100.0, np.random.default_rng(0))
+    times, fired = spikes.times, spikes.units
     trains = [times[fired == u] for u in own if (fired == u).sum() > 3]
     rates.append([1 / np.median(np.diff(t)) for t in trains])           # while firing
     cvs += [np.std(np.diff(t)) / np.mean(np.diff(t)) for t in trains]

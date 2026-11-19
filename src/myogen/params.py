@@ -24,7 +24,7 @@ class MusculoskeletalParams:
 
 @dataclass(frozen=True)
 class ControlParams:
-    """The reference trajectory and how the muscles track it (simulation/muscle_activity.py)."""
+    """The reference trajectory and how the muscles track it (simulation/controller.py)."""
     fs: float = 100.0                     # Hz, control rate and label rate
     warmup_s: float = 0.5                 # first posture held so the controller settles before recording
     min_rest_s: float = 1.0               # rest needed in a motion to take its median posture as the relaxed one
@@ -48,7 +48,7 @@ class ControlParams:
 
 @dataclass(frozen=True)
 class EffortParams:
-    """Effort beyond the mechanical minimum: co-activation and grip (simulation/muscle_activity.py). Speeds and
+    """Effort beyond the mechanical minimum: co-activation and grip (simulation/effort.py). Speeds and
     distances are in joint-range fractions; the subject sets the levels (Subject.cocontraction, hold_tone, ...)."""
     pip_closed_rad: float = 1.5           # PIP angle of a fully closed finger
     speed_lowpass_hz: float = 2.0         # smoothing of joint speed and engagement

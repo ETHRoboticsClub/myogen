@@ -1,7 +1,7 @@
 import numpy as np
 from common import REFS, Forearm, Report
 
-from myogen.simulation.muscle_activity import MuscleController
+from myogen.simulation.controller import MuscleController
 
 r = REFS["activation"]
 f = Forearm()

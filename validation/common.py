@@ -6,7 +6,7 @@ import yaml
 
 import myogen as mg
 from myogen.inputs.motion import REST_POSTURE
-from myogen.simulation.muscle_activity import MuscleActivity
+from myogen.simulation.controller import MuscleActivity
 from myogen.simulation.musculoskeletal import HAND_JOINTS, ForearmModel
 
 REFS = yaml.safe_load((Path(__file__).parent / "references.yaml").read_text())

@@ -28,7 +28,16 @@ The notebooks are the way in: `notebooks/01_quickstart.ipynb`, then `notebooks/0
 ```
 src/myogen/
   inputs/        motion, subject, electrodes
-  simulation/    musculoskeletal → muscle_activity → emg → acquisition; anatomy (where the muscles sit)
+  simulation/    one block per step, each with its input and output:
+                   kinematics      HandMotion → JointTrajectory
+                   controller      JointTrajectory → MuscleActivity (least squares on musculoskeletal)
+                   effort          + co-activation, grip and rest tone (heuristics)
+                   emg             MuscleActivity → clean EMG, through:
+                     motor_units     drive → Spikes; where each unit sits (UnitPlacement)
+                     geometry        the subject's forearm, poles, atlas anatomy (anatomy)
+                     muap            what each pole sees of a unit (biphasic | layered volume conductor)
+                     montage         pole signals → channels
+                   acquisition     clean EMG → the device's output
   tools/         calibration, viewer, command line
   params.py      the model's constants
   simulator.py   runs the pipeline
