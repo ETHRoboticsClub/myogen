@@ -10,7 +10,7 @@ import mujoco
 import numpy as np
 
 from ..recording import Recording
-from ..simulation.emg import EMGModel
+from ..simulation.geometry import ForearmGeometry
 from ..simulation.musculoskeletal import ForearmModel
 
 if TYPE_CHECKING:
@@ -56,7 +56,7 @@ class ReplayView:
         m, self.d = model.m, model.d
 
         # The muscles in the subject's cross-section, as the EMG model sees them.
-        self.emg = EMGModel(model, sub, electrodes)
+        self.geometry = ForearmGeometry(model, sub)
         C = len(electrodes)
         self.chan_rgb = np.array([colorsys.hsv_to_rgb(k / C, 0.85, 1.0) for k in range(C)])
         self.owner = np.repeat(np.arange(C), 2)                     # the channel of each pole
@@ -79,12 +79,12 @@ class ReplayView:
         self.forearm = sc.add_frame("/forearm", show_axes=False)
         self.atlas_bones = [sc.add_mesh_simple(f"/forearm/atlas_bones/{n}", v.astype(np.float32),
                                                f.astype(np.uint32), color=BONE_RGB, visible=False)
-                            for n, v, f in self.emg.bone_surfaces()]
-        skin, z_end = self.emg.skin_radius, sub.residual_length * model.forearm_length
+                            for n, v, f in self.geometry.bone_surfaces()]
+        skin, z_end = self.geometry.skin_radius, sub.residual_length * model.forearm_length
         v, f = _frustum(skin(0.0), skin(z_end), z_end)
         self.skin = sc.add_mesh_simple("/forearm/skin", v, f, color=(230, 190, 160), opacity=0.12,
                                        side="double", cast_shadow=False, receive_shadow=False)
-        poles = self.emg.poles                                      # (C, 2 or 1, 3) in the forearm frame
+        poles = self.geometry.poles(electrodes)                     # (C, 2 or 1, 3) in the forearm frame
         self.electrodes = sc.add_point_cloud("/forearm/electrodes", poles.reshape(-1, 3).astype(np.float32),
                                              _rgb(self.chan_rgb[self.owner]), point_size=0.008, point_shape="circle")
         self.pairs = ([sc.add_line_segments("/forearm/bipolar", poles, colors=(40, 40, 40), thickness=3.0,
@@ -93,7 +93,7 @@ class ReplayView:
                                     font_screen_scale=0.7) for n, p in zip(electrodes.names, poles)]
 
         # Atlas muscles as surfaces; the others (upper arm, hand intrinsics) as their paths.
-        surfaces = self.emg.muscle_surfaces(self.d)
+        surfaces = self.geometry.muscle_surfaces(self.d)
         self.anatomy_rgb = {mu: np.array(colorsys.hsv_to_rgb((k * 0.618) % 1, 0.6, 0.8))
                             for k, (mu, _, _) in enumerate(surfaces)}
         self.muscles = {mu: sc.add_mesh_simple(f"/forearm/muscles/{model.muscle_names[mu]}", v.astype(np.float32),
@@ -128,7 +128,7 @@ class ReplayView:
         """Gravity arrow (the camera's up is against it), camera placement, and the armrest if supported."""
         model, sub = self.model, self.rec.subject
         q0 = self.q[0]
-        model.prepare(sub, q0, q0)                                  # sets the (armrest-projected) gravity
+        model.set_environment(sub, q0, q0)                          # sets the (armrest-projected) gravity
         gdir = model.m.opt.gravity / np.linalg.norm(model.m.opt.gravity)
         self.down = gdir
         model.set_pose(q0)
@@ -147,7 +147,7 @@ class ReplayView:
             x = axes[2] - (axes[2] @ gdir) * gdir
             x /= np.linalg.norm(x)
             R = np.stack([x, np.cross(-gdir, x), -gdir], 1)
-            centre = elbow + 0.5 * L * x + (self.emg.skin_radius(0.5 * L) + 0.004) * gdir
+            centre = elbow + 0.5 * L * x + (self.geometry.skin_radius(0.5 * L) + 0.004) * gdir
             sc.add_box("/armrest", color=(120, 110, 100), dimensions=(1.2 * L, 0.12, 0.006),
                        position=centre, wxyz=vtf.SO3.from_matrix(R).wxyz, opacity=0.6)
 
@@ -263,7 +263,7 @@ class ReplayView:
     def _draw_muscles(self, exc: np.ndarray) -> None:
         activity = self.muscle_colour.value == "activity"
         if any(h.visible for h in self.muscles.values()):
-            for mu, v, _ in self.emg.muscle_surfaces(self.d):
+            for mu, v, _ in self.geometry.muscle_surfaces(self.d):
                 h = self.muscles[mu]
                 h.vertices = v.astype(np.float32)
                 h.color = tuple(_rgb(_activity(exc[mu]) if activity else self.anatomy_rgb[mu]))

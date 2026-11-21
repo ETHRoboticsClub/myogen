@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from typing import Any
 
 import numpy as np
@@ -21,7 +21,6 @@ class Subject:
     taper: float = 0.375              # wrist radius = elbow radius * (1 - taper); [0.3, 0.45]
     fat_mm: float = 5.0               # subcutaneous fat; [2, 8]
     radial_fill: float = 0.885        # how far out the muscle bellies reach (fraction of radius minus fat)
-    muscle_spread_mm: float = 4.0     # muscle width (transverse spread of the EMG sources); [2, 6]
     amputee: bool = False             # transradial: intrinsic hand muscles absent, extrinsic ones atrophied
     # Muscles relative to the model and the atlas (per-muscle lists: (nu,), None = unchanged)
     strength: float = 1.0             # maximal force of every muscle; [0.7, 1.3]
@@ -38,8 +37,6 @@ class Subject:
     gravity: tuple[float, float, float] = (0.0, 0.0, -1.0)
     # Muscles and EMG
     gain_mv: float = 1.5              # EMG amplitude: mV RMS of a superficial muscle at full drive (lognormal)
-    amp_exponent: float = 0.8         # EMG amplitude ~ drive ** exponent; [0.6, 1]
-    spectrum_hz: tuple[float, float] = (60.0, 215.0)  # band of the EMG source noise
     passive_stiffness: float = 1.0    # scale of the passive joint stiffness (lognormal)
     muscle_amp: list[float] | None = None        # (nu,) per-muscle EMG amplitude factors (None = 1)
     recruitment_cost: list[float] | None = None  # (nu,) relative cost of recruiting each muscle (None = 1)
@@ -57,7 +54,8 @@ class Subject:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Subject:
-        return cls(**{k: tuple(v) if k in ("gravity", "spectrum_hz") else v for k, v in data.items()})
+        known = {f.name for f in fields(cls)}          # fields of older versions are dropped
+        return cls(**{k: tuple(v) if k == "gravity" else v for k, v in data.items() if k in known})
 
     def per_muscle(self, name: str, n: int, default: float) -> np.ndarray:
         """(n,) a per-muscle field, its default where None."""
@@ -98,20 +96,16 @@ class Subject:
         amp = np.exp(rng.normal(0, 0.35, n_muscles))
         if amputee:
             amp *= np.exp(rng.normal(-0.3, 0.4, n_muscles))      # disuse atrophy
-        lo = float(rng.uniform(40, 80))
         return cls(
             forearm_radius_mm=float(rng.uniform(36, 47)) * (0.92 if amputee else 1.0),
             taper=float(rng.uniform(0.3, 0.45)),
             fat_mm=float(rng.uniform(2, 8)),
             radial_fill=float(rng.uniform(0.8, 0.97)),
-            muscle_spread_mm=float(rng.uniform(2, 6)),
             amputee=amputee,
             residual_length=float(rng.uniform(0.35, 0.8)) if amputee else 1.0,
             elbow_angle_deg=float(rng.uniform(40, 103)),
             armrest=bool(rng.random() < 0.5),
             gain_mv=float(np.exp(rng.normal(np.log(1.5), 0.4))),
-            amp_exponent=float(rng.uniform(0.6, 1.0)),
-            spectrum_hz=(lo, lo + float(rng.uniform(85, 225))),
             passive_stiffness=float(np.exp(rng.normal(0, 0.3))),
             muscle_amp=amp.tolist(),
             recruitment_cost=np.exp(rng.normal(0, 0.25, n_muscles)).tolist(),

@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import mujoco
 import numpy as np
 
+from ..inputs.subject import Subject
 from ..params import MusculoskeletalParams
-
-if TYPE_CHECKING:
-    from ..inputs.subject import Subject
+from .passive import PassiveFingers
 
 MODEL_XML = Path(__file__).resolve().parent.parent / "models" / "myoforearm_r.xml"
 
@@ -27,6 +25,7 @@ ELBOW_JOINT = "elbow_flexion_r"
 INTRINSIC_PREFIXES = ("OP_", "RI", "LU_RB", "UI_UB")
 R_MODEL_REF = 0.032          # m, outermost muscle line-of-action radius in the model's proximal forearm
 GRAVITY = 9.81               # m/s^2
+GENERIC_RANGE = (0.75, 1.05)  # MuJoCo's default muscle mapping: optimal fibre lengths at the shortest/longest path
 
 
 class ForearmModel:
@@ -35,7 +34,12 @@ class ForearmModel:
     def __init__(self, xml: str | Path = MODEL_XML, params: MusculoskeletalParams | None = None) -> None:
         self.params = params or MusculoskeletalParams()
         self.m = m = mujoco.MjModel.from_xml_path(str(xml))
+        for i in range(m.njnt):                                            # joint ranges where params give them
+            deg = _per_joint(m.joint(i).name, self.params.joint_range_deg)
+            if deg is not None:
+                m.jnt_range[i] = np.radians(deg)
         self.d = mujoco.MjData(m)
+        self._set_length_ranges()
         mujoco.mj_forward(m, self.d)
         self.default_qpos = self.d.qpos.copy()
         self.joint_names = [m.joint(i).name for i in range(m.njnt)]
@@ -57,6 +61,48 @@ class ForearmModel:
         self.path_padded = np.array([np.concatenate([p, np.repeat(p[-1:], n_sites - len(p))]) for p in self.path_sites])
         elbow, wrist = self._axis_points(self.d)
         self.forearm_length = float(np.linalg.norm(wrist - elbow))       # m
+        arms = np.abs(self.moment_arms(self.default_qpos)) > 1e-4
+        crosses = lambda names: arms[:, [m.jnt_dofadr[m.joint(n).id] for n in names]].any(1)     # noqa: E731
+        wrist = crosses(("flexion_r", "deviation_r"))
+        fingers = crosses([n for n in HAND_JOINTS if n.startswith(("mcp", "pm", "md"))])
+        p = self.params
+        self.scale_strength(np.where(wrist, np.where(fingers, p.finger_muscle_force_scale, p.wrist_muscle_force_scale),
+                                     1.0))
+        self.passive_fingers = PassiveFingers(self, self.params)
+        for name in self.joint_names:                                      # passive damping where params give it
+            damping = _per_joint(name, self.params.passive_damping)
+            if damping is not None:
+                m.dof_damping[m.jnt_dofadr[m.joint(name).id]] = damping
+
+    def _set_length_ranges(self) -> None:
+        """The length range of each muscle on MuJoCo's generic mapping (its shortest path -> 0.75 of optimal fibre
+        length, its longest -> 1.05): the shortest and longest its path gets over the joint ranges as they are now.
+        MyoSim's stored ranges no longer matched the paths (FDP5's was 5 cm off). Muscles with their own mapping (the
+        arm's, from fibre architecture) keep theirs. Random postures, plus per muscle the two postures where every
+        joint it crosses is at the end that shortens or lengthens it."""
+        m, d = self.m, self.d
+        lo, hi = m.jnt_range[:, 0].copy(), m.jnt_range[:, 1].copy()
+        limited = m.jnt_limited.astype(bool)
+        lo[~limited], hi[~limited] = 0.0, 0.0
+        mid = (lo + hi) / 2
+        rng = np.random.default_rng(0)
+        postures = [lo + rng.uniform(0, 1, m.njnt) ** rng.choice([0.3, 1.0, 3.0]) * (hi - lo)
+                    for _ in range(self.params.length_range_samples)]
+        d.qpos[:] = mid
+        mujoco.mj_fwdPosition(m, d)
+        R = np.zeros((m.nu, m.nv))
+        mujoco.mju_sparse2dense(R, d.actuator_moment, d.moment_rownnz, d.moment_rowadr, d.moment_colind)
+        lengthens = R[:, m.jnt_dofadr] > 0                                    # (nu, njnt): dL/dq > 0
+        for i in range(m.nu):
+            spans = np.abs(R[i, m.jnt_dofadr]) > 1e-6
+            postures += [np.where(spans, np.where(lengthens[i] == longest, hi, lo), mid) for longest in (False, True)]
+        lengths = np.empty((len(postures), m.nu))
+        for k, q in enumerate(postures):
+            d.qpos[:] = q
+            mujoco.mj_fwdPosition(m, d)
+            lengths[k] = d.actuator_length
+        generic = np.all(np.isclose(m.actuator_gainprm[:, :2], GENERIC_RANGE), axis=1)
+        m.actuator_lengthrange[generic] = np.column_stack([lengths.min(0), lengths.max(0)])[generic]
 
     @property
     def nu(self) -> int:
@@ -140,10 +186,17 @@ class ForearmModel:
         """Current fibre lengths (m): path length minus tendon slack (rigid tendon)."""
         return (self.d if d is None else d).actuator_length - self.tendon_slack
 
+    def fibre_lengths_at(self, qpos: np.ndarray) -> np.ndarray:
+        """Fibre lengths (m) at joint state qpos (moves the model there)."""
+        self.set_pose(qpos)
+        return np.maximum(self.fibre_lengths(), 1e-3)
+
     # -- loads besides the muscles -----------------------------------------------------------------------------
 
-    def prepare(self, subject: Subject, q_start: np.ndarray, q_rest: np.ndarray) -> np.ndarray:
-        """Set gravity and the passive joint springs for a run. Returns the fibre lengths at the relaxed posture."""
+    def set_environment(self, subject: Subject, q_start: np.ndarray, q_rest: np.ndarray) -> None:
+        """The physics of a run besides the muscles: gravity (perpendicular to the forearm at q_start when it lies on
+        an armrest) and passive joint springs (the fingers: measured curves, passive.py) that hold the hand at the
+        relaxed posture q_rest without muscle drive."""
         self.set_pose(q_start)
         gravity = np.asarray(subject.gravity, float)
         gravity = gravity / np.linalg.norm(gravity)
@@ -154,20 +207,23 @@ class ForearmModel:
             gravity -= (gravity @ axis) * axis
             gravity /= np.linalg.norm(gravity)
         self.m.opt.gravity[:] = GRAVITY * gravity
+        self.passive_fingers.tabulate()
         self._set_passive_springs(q_rest, subject.passive_stiffness)
-        return np.maximum(self.fibre_lengths(), 1e-3)
 
     def _set_passive_springs(self, q_rest: np.ndarray, scale: float) -> None:
         """Joint springs whose equilibrium is q_rest: a relaxed hand rests there without muscle drive (each spring's
         reference is offset to balance gravity and passive muscle forces at q_rest). Leaves d at q_rest."""
         m, d = self.m, self.d
         k_all = np.zeros(m.njnt)
+        fingers = set(self.passive_fingers.dofs)                # their passive torque is PassiveFingers'
         for name in self.joint_names:
-            k_all[m.joint(name).id] = _joint_stiffness(name, self.params.passive_stiffness) * scale
+            if m.jnt_dofadr[m.joint(name).id] not in fingers:
+                k_all[m.joint(name).id] = (_per_joint(name, self.params.passive_stiffness) or 0.0) * scale
         m.jnt_stiffness[:] = k_all
         m.qpos_spring[:] = q_rest
         self.set_pose(q_rest)
         static = d.qfrc_bias - d.qfrc_actuator           # torque the springs must supply (actuator = passive muscle)
+        self.passive_fingers.set_rest(static, q_rest, scale)  # the finger joints' curves supply it at their joints
         for jid in np.flatnonzero(k_all):
             a, v = m.jnt_qposadr[jid], m.jnt_dofadr[jid]
             m.qpos_spring[a] = q_rest[a] + np.clip(static[v] / k_all[jid], -self.params.spring_offset_max,
@@ -194,10 +250,10 @@ class ForearmModel:
         return tau
 
 
-def _joint_stiffness(name: str, stiffness: dict[str, float]) -> float:
-    """A joint's passive stiffness (Nm/rad); finger joints by prefix (MusculoskeletalParams.passive_stiffness)."""
+def _per_joint(name: str, values: dict[str, float]) -> float | None:
+    """A joint's value in a MusculoskeletalParams table: by name, finger joints by prefix (mcp, mcp_abd, pm, md)."""
     if name.startswith("mcp"):
-        return stiffness["mcp_abd" if "abduction" in name else "mcp"]
+        return values.get("mcp_abd" if "abduction" in name else "mcp")
     if name[:2] in ("pm", "md"):
-        return stiffness[name[:2]]
-    return stiffness.get(name, 0.0)
+        return values.get(name[:2])
+    return values.get(name)

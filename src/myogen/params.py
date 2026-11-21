@@ -8,10 +8,42 @@ from typing import Any
 class MusculoskeletalParams:
     """Loads on the skeleton besides the muscles (simulation/musculoskeletal.py)."""
     # Passive joint stiffness (Nm/rad) around the relaxed posture: capsules, ligaments, resting muscle tone.
-    # Finger joints are looked up by prefix (mcp, mcp_abd, pm, md).
+    # Finger abduction is looked up by prefix (mcp_abd; simulation/passive.py); finger flexion follows the measured
+    # curves below instead.
     passive_stiffness: dict[str, float] = field(default_factory=lambda: {
         "pro_sup_r": 0.1, "deviation_r": 0.25, "flexion_r": 0.2, "cmc_flexion_r": 0.03, "cmc_abduction_r": 0.03,
-        "mp_flexion_r": 0.02, "ip_flexion_r": 0.01, "mcp": 0.04, "mcp_abd": 0.02, "pm": 0.02, "md": 0.01})
+        "mp_flexion_r": 0.02, "ip_flexion_r": 0.01, "mcp_abd": 0.02})
+    # Passive moment-angle curves of the finger flexion joints, the measured total (Nm towards flexion; the joint adds
+    # what the model's muscles do not give, simulation/passive.py). Fingers 3-5 take the index's curves.
+    # MCP: Kuo & Deshpande 2010 (index, wrist 0, IP splinted, 4 subjects): A(e^-B(x-E) - 1) - C(e^D(x-F) - 1) in N cm,
+    # x in deg; (A, B, C, D, E, F).
+    passive_mcp: tuple[float, ...] = (0.68, 0.031, 0.31, 0.07, 73.14, 32.97)
+    # PIP, DIP: Kamper et al. 2002 Table 2, static torque, cubic in rad (c0..c3), measured over -10..60 deg; as
+    # transcribed in MyoSim pull request #139, not checked against the paper. Held constant beyond the valid range
+    # (no data there); the PIP cubic's stiffness turns negative past 45 deg, so it is valid up to there.
+    passive_pip_cubic: tuple[float, ...] = (0.015, -0.132, 0.016, 0.056)
+    passive_dip_cubic: tuple[float, ...] = (-0.019, -0.052, 0.102, -0.103)
+    passive_pip_valid_deg: tuple[float, float] = (-10.0, 45.0)
+    passive_dip_valid_deg: tuple[float, float] = (-10.0, 60.0)
+    # Passive joint damping (Nms/rad) of the finger joints (the others keep the model's): Kamper et al. 2002 (Table 2;
+    # MCP 0.0142 also in Xu et al. 2011).
+    passive_damping: dict[str, float] = field(default_factory=lambda: {
+        "mcp": 0.0142, "mcp_abd": 0.0142, "pm": 0.0105, "md": 0.0081})
+    # Joint ranges (deg) replacing the model's: normal ranges (AAOS: MCP hyperextension, PIP 100, DIP 10 of
+    # hyperextension; Ryu et al. 1991: 40 ulnar, 60-65 extension used in daily tasks), cut where a muscle's path
+    # stops pulling its anatomical way (wrist flexion beyond 45, radial deviation beyond 25: validation/01).
+    joint_range_deg: dict[str, tuple[float, float]] = field(default_factory=lambda: {
+        "flexion_r": (-65.0, 45.0), "deviation_r": (-40.0, 25.0), "mcp": (-30.0, 90.0), "pm": (0.0, 100.0),
+        "md": (-10.0, 90.0)})
+    # Maximal force of the muscles that cross the wrist, relative to the model's, in two groups: those that also move
+    # fingers 2-5 (FDS, FDP, EDC, EIP, EDM) and the others (wrist and thumb muscles). Calibrated together on the
+    # maximal wrist moments (Delp et al. 1996, validation/02) and single-finger pressing forces (Shinohara et al. 2003,
+    # validation/08): the least squared log ratio to the measured means. Effective scales: they do not say whether
+    # PCSA, specific tension or incomplete voluntary activation is off. The fingers' intrinsic muscles keep theirs
+    # (the middle and ring fingers' force is limited by them: 1.2x and 1.6x the measured means).
+    wrist_muscle_force_scale: float = 0.45
+    finger_muscle_force_scale: float = 0.5
+    length_range_samples: int = 3000      # random postures for the muscles' length ranges (musculoskeletal.py)
     spring_offset_max: float = 0.6        # rad, max shift of a spring's reference to balance gravity at rest
     # Fraction of the static joint torque carried by the support: (elbow, wrist) on an armrest / arm held up.
     armrest_support: tuple[float, float] = (0.925, 0.6)
@@ -24,9 +56,9 @@ class MusculoskeletalParams:
 
 @dataclass(frozen=True)
 class ControlParams:
-    """The reference trajectory and how the muscles track it (simulation/muscle_activity.py)."""
+    """The reference trajectory and how the muscles track it (simulation/muscle_solver.py)."""
     fs: float = 100.0                     # Hz, control rate and label rate
-    warmup_s: float = 0.5                 # first posture held so the controller settles before recording
+    warmup_s: float = 0.5                 # first posture held so the muscle solver settles before recording
     min_rest_s: float = 1.0               # rest needed in a motion to take its median posture as the relaxed one
     joint_limit_tolerance: float = 0.05   # rad beyond a joint limit before a warning (angles are clipped)
     pd_bandwidth_hz: float = 8.0          # PD tracking bandwidth
@@ -43,12 +75,12 @@ class ControlParams:
     weak_reserve_cost: float = 0.1
     weak_reserve_max_nm: float = 3.0
     max_speed: float = 200.0              # rad/s: beyond this the simulation has diverged (reset to the reference)
-    drive_lowpass_hz: float = 4.0         # neural drive smoothing (the controller's fast corrections are artifacts)
+    drive_lowpass_hz: float = 4.0         # neural drive smoothing (the solver's fast corrections are artifacts)
 
 
 @dataclass(frozen=True)
 class EffortParams:
-    """Effort beyond the mechanical minimum: co-activation and grip (simulation/muscle_activity.py). Speeds and
+    """Effort beyond the mechanical minimum: co-activation and grip (simulation/effort.py). Speeds and
     distances are in joint-range fractions; the subject sets the levels (Subject.cocontraction, hold_tone, ...)."""
     pip_closed_rad: float = 1.5           # PIP angle of a fully closed finger
     speed_lowpass_hz: float = 2.0         # smoothing of joint speed and engagement
@@ -123,21 +155,16 @@ class MotorUnitParams:
 @dataclass(frozen=True)
 class EMGParams:
     """From muscle activity to the signal at the electrodes (simulation/emg.py)."""
-    engine: str = "noise"                 # noise: band-limited noise sources | motor_units: motor-unit spike trains
     motor_units: MotorUnitParams = field(default_factory=MotorUnitParams)
-    anatomy: str = "atlas"                # atlas (docs/anatomy.md) | lines
-    n_sources: int = 6                    # point sources per muscle belly
-    decay_mm: float = 12.0                # distance over which a source's gain at a pole falls by 1/e
+    decay_mm: float = 12.0                # distance over which a unit's gain at a pole falls by 1/e (biphasic)
     conduction_velocity: float = 4.0      # m/s along the fibres (sets the delay between the two poles)
     fs: float = 2000.0                    # Hz, output sampling rate
-    filter_order: int = 2                 # band-pass of the source noise (band: Subject.spectrum_hz)
     superficial_depth_m: float = 0.004    # muscle depth below the fat used to normalise amplitudes
     elbow_margin_m: float = 0.02          # sources up to this far proximal of the elbow still count
-    noise_to_mv: float = 3.0              # unit-variance source noise -> mV (before Subject.gain_mv)
-    # Calibration against the point-electrode model this replaces (same spatial selectivity at decay 12 mm):
-    # the bipolar derivation is 1.65x stronger, and it lowers the spectrum, compensated by Subject.spectrum_hz.
-    bipolar_scale: float = 0.6
-    monopolar_scale: float = 1.0          # monopolar: the point-electrode model itself
+    # mV per unit of the normalised signal, times Subject.gain_mv (calibrated against the point-electrode model the
+    # motor units replaced, at decay 12 mm: the bipolar derivation is 1.65x stronger).
+    bipolar_scale: float = 1.8
+    monopolar_scale: float = 3.0
 
 
 @dataclass(frozen=True)
